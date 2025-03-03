@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --partition=gpu
 #SBATCH --gpus=1
-#SBATCH --job-name=node_hpo
+#SBATCH --job-name=gate_hpo
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=18
 #SBATCH --time=24:00:00
-#SBATCH --output=hpo_run_%A.out
+#SBATCH --output=hpo_gate_run_%A.out
 
 # Load required modules
 module purge
@@ -30,9 +30,9 @@ SEED=42
 
 # Create timestamp for unique study name
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-STUDY_NAME="hpo_node_mp${MASK_PROB/./}_${TIMESTAMP}"
+STUDY_NAME="hpo_gate_mp${MASK_PROB/./}_${TIMESTAMP}"
 
-echo "Starting node masking hyperparameter optimization..."
+echo "Starting gate masking hyperparameter optimization..."
 echo "Study name: $STUDY_NAME"
 echo "Number of trials: $NUM_TRIALS"
 echo "HPO epochs per trial: $HPO_EPOCHS"
@@ -42,6 +42,7 @@ echo "Number of graphs: $NUM_GRAPHS"
 # Run HPO with node masking
 python hpo.py \
   --num_graphs "$NUM_GRAPHS" \
+  --gate_masking \
   --mask_prob "$MASK_PROB" \
   --n_trials "$NUM_TRIALS" \
   --hpo_epochs "$HPO_EPOCHS" \

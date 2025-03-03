@@ -37,8 +37,8 @@ def objective(trial, args, data_loaders, feature_info):
     seed = args.seed + trial.number
     set_seed(seed)
 
-    # Define the hyperparameter search space
-    hidden_dim = trial.suggest_int("hidden_dim", 64, 256, log=True)
+    # Define the hyperparameter search space with expanded hidden_dim range
+    hidden_dim = trial.suggest_int("hidden_dim", 64, 512, log=True)
     num_layers = trial.suggest_int("num_layers", 1, 6)
     num_heads = trial.suggest_int("num_heads", 2, 8)
     dropout = trial.suggest_float("dropout", 0.0, 0.5)
@@ -46,7 +46,7 @@ def objective(trial, args, data_loaders, feature_info):
 
     # Use fixed batch size or make it a hyperparameter
     if args.optimize_batch_size:
-        batch_size = trial.suggest_categorical("batch_size", [8, 16, 32, 64])
+        batch_size = trial.suggest_categorical("batch_size", [8, 16, 32, 64, 128])
         train_loader = DataLoader(data_loaders['train_dataset'], batch_size=batch_size, shuffle=True)
         val_loader = DataLoader(data_loaders['val_dataset'], batch_size=batch_size, shuffle=False)
     else:
@@ -112,8 +112,12 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Hyperparameter Optimization for AIG Transformer Model")
 
     # Dataset parameters
-    parser.add_argument('--file_path', type=str, default="gpt_graphs.pkl",
-                        help="Path to the dataset file")
+    parser.add_argument('--file_path', type=str, default=None,
+                        help="Path to the original dataset file (only needed if processed data doesn't exist)")
+    parser.add_argument('--root', type=str, default="",
+                        help="Directory containing the processed data.pt file")
+    parser.add_argument('--processed_file', type=str, default="data.pt",
+                        help="Name of the processed PyG dataset file")
     parser.add_argument('--max_nodes', type=int, default=120,
                         help="Maximum number of nodes in each graph")
     parser.add_argument('--val_ratio', type=float, default=0.2,
@@ -130,9 +134,9 @@ def parse_args():
                         help="Masking probability to use during HPO")
 
     # HPO parameters
-    parser.add_argument('--n_trials', type=int, default=20,
+    parser.add_argument('--n_trials', type=int, default=150,
                         help="Number of trials for hyperparameter optimization")
-    parser.add_argument('--hpo_epochs', type=int, default=5,
+    parser.add_argument('--hpo_epochs', type=int, default=10,
                         help="Number of epochs per trial")
     parser.add_argument('--study_name', type=str, default=None,
                         help="Name of the Optuna study")
@@ -154,12 +158,11 @@ def main():
 
     # Set up study name if not provided
     if args.study_name is None:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         masking_type = "gate" if args.gate_masking else "node"
-        args.study_name = f"hpo_{masking_type}_mp{int(args.mask_prob * 100)}_{timestamp}"
+        args.study_name = f"hpo_{masking_type}_mp{int(args.mask_prob * 100)}"
 
     # Create results directory
-    results_dir = f"./hpo_results/{args.study_name}"
+    results_dir = f"./results/hpo_results/{args.study_name}"
     os.makedirs(results_dir, exist_ok=True)
 
     # Create storage path for optuna study
@@ -175,18 +178,16 @@ def main():
     print(f"Using {'gate' if args.gate_masking else 'node'} masking at {args.mask_prob * 100}% probability")
     print(f"Running {args.n_trials} trials with {args.hpo_epochs} epochs each")
 
-    # Load dataset
-    print(f"Loading dataset from {args.file_path}")
-    full_dataset = AIGDataset(file_path=args.file_path)
+    # Load dataset directly from processed data
+    print(f"Loading dataset from processed directory: {args.processed_dir}")
+    full_dataset = AIGDataset(
+        num_graphs=args.num_graphs,
+        processed_file=args.processed_file
+    )
     print(f"Loaded dataset with {len(full_dataset)} graphs")
 
-    # Limit the number of graphs if specified
-    if args.num_graphs and args.num_graphs < len(full_dataset):
-        # Create a subset using randomly selected graphs
-        all_indices = list(range(len(full_dataset)))
-        selected_indices = random.sample(all_indices, args.num_graphs)
-        full_dataset = Subset(full_dataset, selected_indices)
-        print(f"Randomly selected {args.num_graphs} graphs from dataset")
+    # Limit the number of graphs if specified (handled within AIGDataset now)
+    # The limit is applied during dataset initialization
 
     # Split into train and validation
     total = len(full_dataset)
@@ -289,7 +290,8 @@ def main():
     if args.gate_masking:
         cmd += "--gate_masking "
 
-    cmd += f"--seed {args.seed} --file_path {args.file_path} --num_graphs {args.num_graphs}"
+    # Update the command to use processed data paths
+    cmd += f"--seed {args.seed} --processed_dir {args.processed_dir} --processed_file {args.processed_file} --num_graphs {args.num_graphs}"
 
     # Save command to file
     cmd_path = os.path.join(results_dir, "best_params_command.txt")

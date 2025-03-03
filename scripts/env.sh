@@ -17,7 +17,7 @@ cd ..
 cd setup
 
 conda env create -f env.yml
-conda activate aig-ml
+source activate aig-ml
 pip install -r requirements.txt
 
 echo "Environment created and activated"

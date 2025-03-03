@@ -31,8 +31,12 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train and evaluate the AIG Transformer Model with Node/Gate Masking")
 
     # Dataset parameters
-    parser.add_argument('--file_path', type=str, default="gpt_graphs.pkl",
-                        help="Path to the dataset file")
+    parser.add_argument('--file_path', type=str, default=None,
+                        help="Path to the original dataset file (only needed if processed data doesn't exist)")
+    parser.add_argument('--root', type=str, default="",
+                        help="Root directory containing the processed data.pt file")
+    parser.add_argument('--processed_file', type=str, default="data.pt",
+                        help="Name of the processed PyG dataset file")
 
     parser.add_argument('--max_nodes', type=int, default=120,
                         help="Maximum number of nodes in each graph")
@@ -138,28 +142,15 @@ def main():
         f.write(f"Configuration saved to: {config_path}\n")
         f.write("\n")
 
-    # Load the dataset
-    print(f"Loading dataset from {args.file_path}...")
-    # After loading the full dataset
-    full_dataset = AIGDataset(file_path=args.file_path, num_graphs=None)  # Load all graphs
+    # Load the dataset from processed data
+    print(f"Loading dataset from root directory: {args.root}")
+    full_dataset = AIGDataset(
+        file_path=args.file_path,  # Only used if processed data doesn't exist
+        num_graphs=args.num_graphs,
+        root=args.root,
+        processed_file=args.processed_file
+    )
     print(f"Loaded dataset with {len(full_dataset)} graphs")
-
-    # Limit the number of graphs if specified
-    if args.num_graphs and args.num_graphs < len(full_dataset):
-        # Create a subset using randomly selected graphs
-        from torch.utils.data import Subset
-        import random
-
-        # Set seed for reproducibility
-        random.seed(args.seed)
-
-        # Randomly select indices without replacement
-        all_indices = list(range(len(full_dataset)))
-        selected_indices = random.sample(all_indices, args.num_graphs)
-
-        # Create subset
-        full_dataset = Subset(full_dataset, selected_indices)
-        print(f"Randomly selected {args.num_graphs} graphs from dataset")
 
     # Split the dataset
     total = len(full_dataset)

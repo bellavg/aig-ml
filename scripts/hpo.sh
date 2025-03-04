@@ -4,7 +4,7 @@
 #SBATCH --job-name=node_hpo
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=18
-#SBATCH --time=24:00:00
+#SBATCH --time=12:00:00
 #SBATCH --output=hpo_run_%A.out
 
 # Load required modules
@@ -22,8 +22,8 @@ cd ..
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 
 # Set common parameters
-NUM_GRAPHS=500
-NUM_TRIALS=100
+NUM_GRAPHS=750
+NUM_TRIALS=200
 HPO_EPOCHS=10
 MASK_PROB=0.4
 SEED=42

@@ -38,9 +38,12 @@ def objective(trial, args, data_loaders, feature_info):
     # set_seed(seed)
 
     # Define the hyperparameter search space with expanded hidden_dim range
-    hidden_dim = trial.suggest_categorical("hidden_dim", [64, 128, 256, 512, 1024])
+    num_heads = trial.suggest_int("num_heads", 2, 8)  # Choose between 2 and 8 heads
+
+    # Choose hidden_dim ensuring it's divisible by num_heads
+    hidden_dim_choices = [d for d in [64, 128, 256, 512, 1024] if d % num_heads == 0]
+    hidden_dim = trial.suggest_categorical("hidden_dim", hidden_dim_choices)
     num_layers = trial.suggest_int("num_layers", 1, 6)
-    num_heads = trial.suggest_int("num_heads", 2, 8, step=2)
     dropout = trial.suggest_float("dropout", 0.0, 0.5)
     learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-2, log=True)
 
@@ -120,7 +123,7 @@ def parse_args():
                         help="Name of the processed PyG dataset file")
     parser.add_argument('--max_nodes', type=int, default=120,
                         help="Maximum number of nodes in each graph")
-    parser.add_argument('--val_ratio', type=float, default=0.2,
+    parser.add_argument('--val_ratio', type=float, default=0.25,
                         help="Ratio of dataset used for validation")
     parser.add_argument('--device', type=str, default='cuda',
                         help="Device for training (e.g., 'cuda' or 'cpu')")

@@ -34,13 +34,13 @@ def objective(trial, args, data_loaders, feature_info):
     Returns validation loss to be minimized.
     """
     # Set the seed for this trial
-    seed = args.seed + trial.number
-    set_seed(seed)
+    # seed = args.seed + trial.number
+    # set_seed(seed)
 
     # Define the hyperparameter search space with expanded hidden_dim range
-    hidden_dim = trial.suggest_int("hidden_dim", 64, 512, log=True)
+    hidden_dim = trial.suggest_categorical("hidden_dim", [64, 128, 256, 512, 1024])
     num_layers = trial.suggest_int("num_layers", 1, 6)
-    num_heads = trial.suggest_int("num_heads", 2, 8)
+    num_heads = trial.suggest_int("num_heads", 2, 8, step=2)
     dropout = trial.suggest_float("dropout", 0.0, 0.5)
     learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-2, log=True)
 
@@ -179,7 +179,7 @@ def main():
     print(f"Running {args.n_trials} trials with {args.hpo_epochs} epochs each")
 
     # Load dataset directly from processed data
-    print(f"Loading dataset from processed directory: {args.processed_dir}")
+    print(f"Loading dataset from processed directory")
     full_dataset = AIGDataset(
         num_graphs=args.num_graphs,
         processed_file=args.processed_file

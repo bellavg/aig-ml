@@ -38,7 +38,7 @@ def objective(trial, args, data_loaders, feature_info):
     # set_seed(seed)
 
     # Define the hyperparameter search space with expanded hidden_dim range
-    num_heads = trial.suggest_int("num_heads", 2, 8)  # Choose between 2 and 8 heads
+    num_heads = trial.suggest_int("num_heads", 2, 8, step=2)
 
     # Choose hidden_dim ensuring it's divisible by num_heads
     hidden_dim_choices = [d for d in [64, 128, 256, 512, 1024] if d % num_heads == 0]

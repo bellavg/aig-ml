@@ -4,7 +4,6 @@ import torch
 def create_masked_batch(batch, mp=0.20, gate_masking=False):
     """
     Create masked batch with support for both node-only and gate masking.
-
     Args:
         batch: PyG Data object containing the batch
         mp: Masking probability (0.0 to 1.0)

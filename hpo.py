@@ -49,7 +49,7 @@ def objective(trial, args, data_loaders, feature_info):
 
     # Use fixed batch size or make it a hyperparameter
     if args.optimize_batch_size:
-        batch_size = trial.suggest_categorical("batch_size", [8, 16, 32, 64, 128])
+        batch_size = trial.suggest_categorical("batch_size", [8, 16, 32, 64, 128, 256])
         train_loader = DataLoader(data_loaders['train_dataset'], batch_size=batch_size, shuffle=True)
         val_loader = DataLoader(data_loaders['val_dataset'], batch_size=batch_size, shuffle=False)
     else:
@@ -278,31 +278,6 @@ def main():
     with open(storage_path, "wb") as f:
         pickle.dump(study, f)
     print(f"Study object saved to: {storage_path}")
-
-    # Generate command for running with best parameters
-    cmd = f"python main.py --hidden_dim {trial.params.get('hidden_dim')} --num_layers {trial.params.get('num_layers')} "
-    cmd += f"--num_heads {trial.params.get('num_heads')} --dropout {trial.params.get('dropout')} --lr {trial.params.get('learning_rate')} "
-
-    if args.optimize_batch_size:
-        cmd += f"--batch_size {trial.params.get('batch_size')} "
-    else:
-        cmd += f"--batch_size {args.batch_size} "
-
-    cmd += f"--mask_prob {args.mask_prob} "
-
-    if args.gate_masking:
-        cmd += "--gate_masking "
-
-    # Update the command to use processed data paths
-    cmd += f"--seed {args.seed} --processed_dir {args.processed_dir} --processed_file {args.processed_file} --num_graphs {args.num_graphs}"
-
-    # Save command to file
-    cmd_path = os.path.join(results_dir, "best_params_command.txt")
-    with open(cmd_path, "w") as f:
-        f.write(cmd)
-
-    print(f"Command for running with best parameters saved to: {cmd_path}")
-    print(f"Command: {cmd}")
 
     # Optional: Generate plots if visualization libraries are available
     try:

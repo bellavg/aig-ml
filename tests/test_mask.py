@@ -1,70 +1,201 @@
-import torch
 import unittest
-from ..masking import create_masked_aig_with_edges
-from torch_geometric.data import Data
+import torch
+from torch_geometric.data import Data, Batch
+import sys
+import os
+import random
+import numpy as np
 
-class TestCreateMaskedAIGWithEdges(unittest.TestCase):
-    def test_masking_behavior(self):
-        """
-        Builds a small synthetic PyG Data object with 5 nodes:
-          - Node 0 => [1,0,0] (PI)
-          - Node 1 => [0,1,0] (AND)
-          - Node 2 => [0,1,0] (AND)
-          - Node 3 => [0,0,1] (PO)
-          - Node 4 => [0,1,0] (AND)
-        Edges: (0->1), (1->2), (2->3), (1->4), (4->3).
-        Then forces node_mask_prob=1.0 to guarantee all ANDs are masked.
-        Checks that the function zeroes out the AND node features and removes
-        edges originating or ending in them.
-        """
-        # Make the node features (for simplicity, no extra 'feature' column)
-        x = torch.tensor([
-            [1,0,0,1],  # PI
-            [0,1,0,1],  # AND
-            [0,1,0,1],  # AND
-            [0,0,1,1],  # PO
-            [0,1,0,1],  # AND
-        ], dtype=torch.float)
+# Import your masking function - adjust the path as needed
+sys.path.append(os.path.abspath('..'))
+from masking import create_masked_batch
 
-        # Build edge_index: shape = [2, E]
-        #   For instance 0->1, 1->2, 2->3, 1->4, 4->3
-        edge_index = torch.tensor([
-            [0, 1, 2, 1, 4],
-            [1, 2, 3, 4, 3]
-        ], dtype=torch.long)
 
-        # Optionally define edge attributes
-        edge_attr = torch.ones(edge_index.size(1), 2)  # e.g. shape [5,2]
+class TestMasking(unittest.TestCase):
 
-        # Create the PyG data object
-        aig = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
+    def setUp(self):
+        """Create synthetic AIG graphs for testing."""
+        # Set random seed for reproducibility
+        torch.manual_seed(42)
+        random.seed(42)
+        np.random.seed(42)
 
-        # Force a 100% chance (1.0) to mask AND gates so test is deterministic
-        masked_aig = create_masked_aig_with_edges(aig, node_mask_prob=1.0)
+        # Create a small synthetic graph resembling an AIG
+        # Node types: [1,0,0] = PI, [0,1,0] = AND, [0,0,1] = PO
+        self.single_graph = Data(
+            x=torch.tensor([
+                [1, 0, 0],  # PI
+                [1, 0, 0],  # PI
+                [0, 1, 0],  # AND
+                [0, 1, 0],  # AND
+                [0, 0, 1],  # PO
+            ], dtype=torch.float),
+            edge_index=torch.tensor([
+                [0, 1, 2, 3],  # From
+                [2, 2, 3, 4],  # To
+            ], dtype=torch.long),
+            edge_attr=torch.tensor([
+                [1, 0],  # Normal
+                [1, 0],  # Normal
+                [1, 0],  # Normal
+                [1, 0],  # Normal
+            ], dtype=torch.float)
+        )
 
-        # 1) Check that x_target and edge_index_target are clones of original
-        self.assertTrue(torch.equal(masked_aig.x_target, aig.x))
-        self.assertTrue(torch.equal(masked_aig.edge_index_target, aig.edge_index))
-        self.assertTrue(torch.equal(masked_aig.edge_attr_target, aig.edge_attr))
+        # Create batch of multiple graphs
+        self.batch = Batch.from_data_list([
+            self.single_graph,
+            self.single_graph  # Just duplicate for simplicity
+        ])
 
-        # 2) Check that all AND gates got masked => node_mask is True for nodes 1,2,4
-        expected_mask = torch.tensor([False, True, True, False, True], dtype=torch.bool)
-        self.assertTrue(torch.equal(masked_aig.node_mask, expected_mask))
+    def test_node_feature_masking(self):
+        """Test node feature masking mode."""
+        mask_prob = 1.0  # Ensure all eligible nodes are masked
+        masked_batch = create_masked_batch(self.batch, mp=mask_prob, mask_mode="node_feature")
 
-        # 3) Those masked nodes should have been zeroed in masked_aig.x
-        self.assertTrue(torch.allclose(masked_aig.x[1], torch.zeros(4)))
-        self.assertTrue(torch.allclose(masked_aig.x[2], torch.zeros(4)))
-        self.assertTrue(torch.allclose(masked_aig.x[4], torch.zeros(4)))
+        # Check that attributes are preserved
+        self.assertTrue(hasattr(masked_batch, 'x_target'))
+        self.assertTrue(hasattr(masked_batch, 'edge_index_target'))
+        self.assertTrue(hasattr(masked_batch, 'edge_attr_target'))
+        self.assertTrue(hasattr(masked_batch, 'node_mask'))
 
-        # 4) The edges out of or into masked nodes (1,2,4) must be removed in new edge_index
-        # Original edges: 0->1,1->2,2->3,1->4,4->3 => all involve masked nodes except 2->3
-        # Actually node 2 is also masked, so 2->3 is out. So all edges removed => no edges remain
-        self.assertEqual(masked_aig.edge_index.size(1), 0)  # Expect zero edges
+        # Check that masking mode is stored
+        self.assertEqual(masked_batch.mask_mode, "node_feature")
 
-        # 5) The edge_mask should be True for all old edges
-        self.assertTrue(masked_aig.edge_mask.all().item())
+        # Check that node features are masked (zeroed out) where node_mask is True
+        # and only for AND gates (nodes 2, 3, 7, 8 in our batch)
+        for i in range(masked_batch.x.size(0)):
+            if masked_batch.node_mask[i]:
+                self.assertTrue(torch.all(masked_batch.x[i] == 0).item())
+                # Check it's an AND gate in the original
+                self.assertTrue(torch.all(masked_batch.x_target[i, 1:2] == 1).item())
 
-        # That’s it!
+        # Verify no edges were modified
+        self.assertTrue(torch.equal(masked_batch.edge_index, masked_batch.edge_index_target))
+        self.assertTrue(torch.equal(masked_batch.edge_attr, masked_batch.edge_attr_target))
+
+    def test_edge_feature_masking(self):
+        """Test edge feature masking mode."""
+        mask_prob = 1.0  # Ensure all eligible edges are masked
+        masked_batch = create_masked_batch(self.batch, mp=mask_prob, mask_mode="edge_feature")
+
+        # Check that attributes are preserved
+        self.assertTrue(hasattr(masked_batch, 'edge_mask'))
+
+        # Check that edge features are masked (zeroed out) where edge_mask is True
+        for i in range(masked_batch.edge_attr.size(0)):
+            if masked_batch.edge_mask[i]:
+                self.assertTrue(torch.all(masked_batch.edge_attr[i] == 0).item())
+
+        # Verify edge structure is preserved
+        self.assertTrue(torch.equal(masked_batch.edge_index, masked_batch.edge_index_target))
+        self.assertEqual(masked_batch.edge_index.size(1), masked_batch.edge_index_target.size(1))
+
+    def test_node_existence_masking(self):
+        """Test node existence masking mode."""
+        mask_prob = 1.0  # Ensure all eligible nodes are masked
+        masked_batch = create_masked_batch(self.batch, mp=mask_prob, mask_mode="node_existence")
+
+        # Check that attributes are preserved
+        self.assertTrue(hasattr(masked_batch, 'node_existence_mask'))
+        self.assertTrue(hasattr(masked_batch, 'node_existence_target'))
+
+        # Check that node features are masked where node_mask is True
+        for i in range(masked_batch.x.size(0)):
+            if masked_batch.node_mask[i]:
+                self.assertTrue(torch.all(masked_batch.x[i] == 0).item())
+                # Check that the node is also marked for existence prediction
+                self.assertTrue(masked_batch.node_existence_mask[i].item())
+
+        # Verify default existence target is all ones
+        self.assertTrue(torch.all(masked_batch.node_existence_target == 1).item())
+
+    def test_edge_existence_masking(self):
+        """Test edge existence masking mode."""
+        mask_prob = 1.0  # Ensure all eligible edges are masked
+        masked_batch = create_masked_batch(self.batch, mp=mask_prob, mask_mode="edge_existence")
+
+        # Check that attributes are preserved
+        self.assertTrue(hasattr(masked_batch, 'edge_existence_mask'))
+        self.assertTrue(hasattr(masked_batch, 'edge_existence_target'))
+
+        # Check that edge features are masked where edge_mask is True
+        for i in range(masked_batch.edge_attr.size(0)):
+            if masked_batch.edge_mask[i]:
+                self.assertTrue(torch.all(masked_batch.edge_attr[i] == 0).item())
+                # Check that the edge is also marked for existence prediction
+                self.assertTrue(masked_batch.edge_existence_mask[i].item())
+
+        # Verify default existence target is all ones
+        self.assertTrue(torch.all(masked_batch.edge_existence_target == 1).item())
+
+        # Verify edge structure is preserved
+        self.assertTrue(torch.equal(masked_batch.edge_index, masked_batch.edge_index_target))
+        self.assertEqual(masked_batch.edge_index.size(1), masked_batch.edge_index_target.size(1))
+
+    def test_removal_masking(self):
+        """Test node removal masking mode."""
+        mask_prob = 1.0  # Ensure all eligible nodes are masked
+        masked_batch = create_masked_batch(self.batch, mp=mask_prob, mask_mode="removal")
+
+        # Check that attributes are preserved
+        self.assertTrue(hasattr(masked_batch, 'node_removal_mask'))
+        self.assertTrue(hasattr(masked_batch, 'original_to_new_indices'))
+        self.assertTrue(hasattr(masked_batch, 'old_to_new_mapping'))
+        self.assertTrue(hasattr(masked_batch, 'num_original_nodes'))
+
+        # Verify node reduction
+        self.assertLess(masked_batch.x.size(0), masked_batch.num_original_nodes)
+
+        # Verify structure consistency
+        if masked_batch.edge_index.size(1) > 0:
+            # All edge indices should be valid for the reduced node set
+            self.assertTrue(torch.all(masked_batch.edge_index[0] < masked_batch.x.size(0)).item())
+            self.assertTrue(torch.all(masked_batch.edge_index[1] < masked_batch.x.size(0)).item())
+
+        # Check node mask has correct size for the reduced graph
+        self.assertEqual(masked_batch.node_mask.size(0), masked_batch.x.size(0))
+
+        # Verify existence targets
+        self.assertTrue(hasattr(masked_batch, 'node_existence_target'))
+        self.assertTrue(hasattr(masked_batch, 'edge_existence_target'))
+
+        # Check that removed nodes have existence target = 0
+        for i in range(masked_batch.num_original_nodes):
+            if masked_batch.node_removal_mask[i]:
+                self.assertEqual(masked_batch.node_existence_target[i].item(), 0.0)
+
+    def test_edge_consistency_removal(self):
+        """Test edge consistency in removal mode."""
+        mask_prob = 0.5  # Partial masking
+        masked_batch = create_masked_batch(self.batch, mp=mask_prob, mask_mode="removal")
+
+        # Verify that all edges connect to valid nodes
+        if masked_batch.edge_index.size(1) > 0:
+            max_node_idx = masked_batch.x.size(0) - 1
+            self.assertTrue(torch.all(masked_batch.edge_index[0] <= max_node_idx).item())
+            self.assertTrue(torch.all(masked_batch.edge_index[1] <= max_node_idx).item())
+
+            # Check that no edges connect to removed nodes
+            old_to_new = masked_batch.old_to_new_mapping
+            for i in range(masked_batch.edge_index_target.size(1)):
+                if masked_batch.edge_mask[i]:
+                    # This edge should not be in the reduced graph
+                    src, dst = masked_batch.edge_index_target[:, i]
+                    # At least one endpoint should be a removed node
+                    self.assertTrue(old_to_new[src] == -1 or old_to_new[dst] == -1)
+
+    def test_fixed_mask_size(self):
+        """Test that node_mask has the correct size in removal mode."""
+        mask_prob = 1.0  # Ensure all eligible nodes are masked
+        masked_batch = create_masked_batch(self.batch, mp=mask_prob, mask_mode="removal")
+
+        # The node_mask should match the reduced graph size, not the original
+        self.assertEqual(masked_batch.node_mask.size(0), masked_batch.x.size(0))
+
+        # Check node_removal_mask has original size
+        self.assertEqual(masked_batch.node_removal_mask.size(0), masked_batch.num_original_nodes)
+
 
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main()

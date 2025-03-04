@@ -12,7 +12,7 @@ from datetime import datetime
 
 # Import your custom modules
 from aig_dataset import AIGDataset
-from model import AIGTransformer
+from model import AIGTransformer, reconstruct_predictions
 from train import train_epoch
 from test import validate
 
@@ -28,7 +28,7 @@ def set_seed(seed):
 
 def parse_args():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="Train and evaluate the AIG Transformer Model with Node/Gate Masking")
+    parser = argparse.ArgumentParser(description="Train and evaluate the AIG Transformer Model with various masking strategies")
 
     # Dataset parameters
     parser.add_argument('--file_path', type=str, default=None,
@@ -67,8 +67,12 @@ def parse_args():
     # Masking parameters
     parser.add_argument('--mask_prob', type=float, default=0.20,
                         help="Masking probability for nodes/gates")
+    parser.add_argument('--mask_mode', type=str, default="node_feature",
+                        choices=["node_feature", "edge_feature", "node_existence", "edge_existence", "removal"],
+                        help="Masking mode to use for training")
+    # For backward compatibility
     parser.add_argument('--gate_masking', action='store_true',
-                        help="Enable gate masking (node + connected edges)")
+                        help="Enable gate masking (equivalent to --mask_mode=gate)")
 
     # Training parameters
     parser.add_argument('--num_epochs', type=int, default=2,
@@ -105,10 +109,20 @@ def main():
     # Set random seed for reproducibility
     set_seed(args.seed)
 
+    # Handle backward compatibility: if gate_masking is set, override mask_mode
+    if args.gate_masking:
+        args.mask_mode = "node_existence"  # Changed from "gate" to align with the new 5-mode system
+        print("Warning: --gate_masking is deprecated, use --mask_mode=node_existence instead")
+
     # Set up experiment name if not provided
     if args.exp_name is None:
-        mask_prefix = f"{'gate' if args.gate_masking else 'node'}_mask{int(args.mask_prob * 100):02d}"
-        args.exp_name = f"{mask_prefix}"
+        mask_prefix = f"{args.mask_mode}_mask{int(args.mask_prob * 100):02d}"
+        if args.pretrained_model:
+            # Include info about pretraining in experiment name
+            pretrained_base = os.path.basename(args.pretrained_model).split('_')[0]
+            args.exp_name = f"{mask_prefix}_from_{pretrained_base}"
+        else:
+            args.exp_name = f"{mask_prefix}"
 
     # Create directories
     os.makedirs(args.save_model_path, exist_ok=True)
@@ -132,8 +146,7 @@ def main():
     # Log start of experiment
     with open(log_path, 'w') as f:
         f.write(f"Starting experiment: {args.exp_name}\n")
-        f.write(
-            f"Masking: {'Gate' if args.gate_masking else 'Node'} masking at {args.mask_prob * 100:.1f}% probability\n")
+        f.write(f"Masking mode: {args.mask_mode} at {args.mask_prob * 100:.1f}% probability\n")
         f.write(f"Random seed: {args.seed}\n")
 
         if args.pretrained_model:
@@ -177,7 +190,7 @@ def main():
     print(f"Model input features: nodes={node_features}, edges={edge_features}")
 
     # Print masking strategy
-    print(f"Using {'gate' if args.gate_masking else 'node'} masking at {args.mask_prob * 100:.1f}% probability")
+    print(f"Using {args.mask_mode} masking at {args.mask_prob * 100:.1f}% probability")
 
     # Create model
     model = AIGTransformer(
@@ -239,7 +252,7 @@ def main():
         "best_epoch": 0,
         "best_val_loss": float('inf'),
         "pretrained_model": args.pretrained_model,
-        "masking": "gate" if args.gate_masking else "node",
+        "masking_mode": args.mask_mode,
         "mask_prob": args.mask_prob,
         "seed": args.seed
     }
@@ -256,11 +269,13 @@ def main():
 
         # Run validation
         if epoch % args.val_freq == 0 or epoch == args.num_epochs - 1:
-            val_losses = validate(args, model, val_loader, device)
+            val_losses, val_metrics = validate(args, model, val_loader, device)
             epoch_log += f", Val: {dict(val_losses)}"
+            epoch_log += f", Metrics: {val_metrics}"
 
             # Track metrics
             training_metrics["val_losses"].append(dict(val_losses))
+            training_metrics.setdefault("val_metrics", []).append(val_metrics)
 
             # Check for improvement - use total_loss if available, else fall back to node_loss
             current_val_loss = val_losses.get('total_loss', val_losses.get('node_loss', float('inf')))
@@ -296,12 +311,14 @@ def main():
     model.load_state_dict(torch.load(best_model_path))
 
     # Evaluate on test set
-    test_losses = validate(args, model, test_loader, device)
+    test_losses, test_metrics = validate(args, model, test_loader, device)
     test_log = f"Test results: {dict(test_losses)}"
+    test_log += f", Test metrics: {test_metrics}"
     print(test_log)
 
     # Save final metrics
     training_metrics["test_losses"] = dict(test_losses)
+    training_metrics["test_metrics"] = test_metrics
     with open(results_path, 'w') as f:
         json.dump(training_metrics, f, indent=4)
 

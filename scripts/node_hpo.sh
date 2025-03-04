@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --partition=gpu
 #SBATCH --gpus=1
-#SBATCH --job-name=gate_hpo
+#SBATCH --job-name=node_feat_hpo
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=18
-#SBATCH --time=12:00:00
-#SBATCH --output=hpo_gate_run_%A.out
+#SBATCH --time=16:00:00
+#SBATCH --output=hpo_node_feature_%A.out
 
 # Load required modules
 module purge
@@ -18,9 +18,6 @@ source activate aig-ml
 # Navigate to your project directory
 cd ..
 
-# Create a timestamp for unique run identification
-TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-
 # Set common parameters
 NUM_GRAPHS=750
 NUM_TRIALS=300
@@ -30,25 +27,25 @@ SEED=42
 
 # Create timestamp for unique study name
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-STUDY_NAME="hpo_gate_mp${MASK_PROB/./}_${TIMESTAMP}"
+STUDY_NAME="hpo_node_feature_mp${MASK_PROB/./}_${TIMESTAMP}"
 
-echo "Starting gate masking hyperparameter optimization..."
+echo "Starting node feature masking hyperparameter optimization..."
 echo "Study name: $STUDY_NAME"
 echo "Number of trials: $NUM_TRIALS"
 echo "HPO epochs per trial: $HPO_EPOCHS"
 echo "Mask probability: $MASK_PROB"
 echo "Number of graphs: $NUM_GRAPHS"
 
-# Run HPO with node masking
+# Run HPO with node feature masking
 python hpo.py \
   --num_graphs "$NUM_GRAPHS" \
-  --gate_masking \
   --mask_prob "$MASK_PROB" \
+  --mask_mode "node_feature" \
   --n_trials "$NUM_TRIALS" \
   --hpo_epochs "$HPO_EPOCHS" \
   --study_name "$STUDY_NAME" \
   --seed "$SEED" \
   --optimize_batch_size
 
-echo "HPO completed for node masking!"
+echo "HPO completed for node feature masking!"
 echo "Check results in: ./hpo_results/$STUDY_NAME/"

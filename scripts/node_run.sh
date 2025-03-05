@@ -19,8 +19,8 @@ source activate aig-ml
 cd ..
 
 # Create a timestamp for unique run identification
-TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-RUN_ID="progressive_mask_optimized_${TIMESTAMP}"
+TIMESTAMP=$(date +"%Y%m%d_%H")
+RUN_ID="node_mask_${TIMESTAMP}"
 
 # Set parameters from the JSON input
 NUM_GRAPHS=5000

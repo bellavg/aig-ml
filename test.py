@@ -49,6 +49,8 @@ def validate(args, model, val_loader, device):
             # Forward pass
             predictions = model(masked_batch)
 
+            # Forward pass
+            predictions = model(masked_batch)
             # Prepare base target dictionary with common information
             targets = {
                 'x_target': masked_batch.x_target,

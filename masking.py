@@ -96,19 +96,23 @@ def _create_node_masks(batch, is_and_gate, mp):
 
 
 def _create_edge_masks(batch, mp):
-    """Select edges for masking based on masking probability"""
+    """Select edges for masking based on masking probability with a minimum of 2 edges when possible"""
     edge_mask = torch.zeros(batch.edge_index.size(1), dtype=torch.bool, device=batch.edge_index.device)
 
     # Randomly select edges to mask
     num_edges = batch.edge_index.size(1)
-    num_to_mask_edges = max(1, int(num_edges * mp))
+
+    # Calculate how many edges to mask based on probability, with minimum of 2 if possible
+    num_to_mask_edges = int(num_edges * mp)
+    num_to_mask_edges = max(num_to_mask_edges, 2 if num_edges >= 2 else 1)
+    num_to_mask_edges = min(num_to_mask_edges, num_edges)  # Don't try to mask more edges than exist
 
     if num_edges > 0:
         masked_edge_indices = torch.randperm(num_edges)[:num_to_mask_edges]
         edge_mask[masked_edge_indices] = True
 
-    return edge_mask
 
+    return edge_mask
 
 def _apply_node_feature_masking(masked_batch, batch, node_mask):
     """Apply masking for node_feature mode"""

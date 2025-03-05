@@ -136,17 +136,6 @@ class HPOObjective:
             max_nodes=self.args.max_nodes
         )
 
-        # Load pretrained model if specified
-        if self.args.pretrained_model and os.path.exists(self.args.pretrained_model):
-            print(f"Loading pretrained model from {self.args.pretrained_model}")
-            try:
-                state_dict = torch.load(self.args.pretrained_model, map_location=self.device)
-                model_loaded = model.load_state_dict(state_dict, strict=False)
-                print(f"Successfully loaded pretrained model")
-            except Exception as e:
-                print(f"Error loading pretrained model: {e}")
-                print("Starting with randomly initialized model instead")
-
         model = model.to(self.device)
         optimizer = optim.Adam(model.parameters(), lr=lr)
 
@@ -169,11 +158,19 @@ class HPOObjective:
             # Train for one epoch
             train_losses = train_epoch(epoch_args, model, self.train_loader, optimizer, self.device)
 
+            if args.mask_mode == "edge_feature":
+                current_train_loss = train_losses.get('edge_feature_loss', float('inf'))
+            else:
+                current_train_loss = train_losses.get('total_loss', train_losses.get('node_loss', float('inf')))
+
             # Validate
             val_losses, val_metrics = validate(epoch_args, model, self.val_loader, self.device)
 
-            # Get validation loss - use total_loss if available, else node_loss
-            current_val_loss = val_losses.get('total_loss', val_losses.get('node_loss', float('inf')))
+            # Get validation loss - use edge_feature_loss for your edge_feature mode
+            if args.mask_mode == "edge_feature":
+                current_val_loss = val_losses.get('edge_feature_loss', float('inf'))
+            else:
+                current_val_loss = val_losses.get('total_loss', val_losses.get('node_loss', float('inf')))
 
             # Report to Optuna for pruning
             trial.report(current_val_loss, epoch)
@@ -193,20 +190,25 @@ class HPOObjective:
                 break
 
             epoch_log = (f"Trial {trial.number}, Epoch {epoch + 1}/{self.args.hpo_epochs}, "
-                         f"Train Loss: {train_losses.get('total_loss', train_losses.get('node_loss', 0.0)):.4f}, "
+                         f"Train Loss: {current_train_loss:.4f}, "
                          f"Val Loss: {current_val_loss:.4f}")
             print(epoch_log)
 
         # Evaluate on test set
         test_losses, test_metrics = validate(epoch_args, model, self.test_loader, self.device)
-        test_loss = test_losses.get('total_loss', test_losses.get('node_loss', float('inf')))
+
+        if args.mask_mode == "edge_feature":
+            current_test_loss = test_losses.get('edge_feature_loss', float('inf'))
+        else:
+            current_test_loss = test_losses.get('total_loss', test_losses.get('node_loss', float('inf')))
+
 
         # Save trial results
         trial_info = {
             'trial_number': trial.number,
             'params': trial.params,
             'best_val_loss': best_val_loss,
-            'test_loss': test_loss,
+            'test_loss':  current_test_loss,
             'test_metrics': test_metrics
         }
 
@@ -228,8 +230,7 @@ def run_hpo(args):
 
     # Set up study name if not provided
     if args.study_name is None:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        args.study_name = f"hpo_{args.mask_mode}_mp{int(args.mask_prob * 100):02d}_{timestamp}"
+        args.study_name = f"hpo_{args.mask_mode}_mp{int(args.mask_prob * 100):02d}"
 
     # Directory for this HPO run
     output_dir = os.path.join(args.results_dir, args.study_name)
@@ -263,7 +264,7 @@ def run_hpo(args):
     )
 
     # Default batch size for initial data loaders
-    args.batch_size = 32
+    args.batch_size = 8
 
     # Create data loaders
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
@@ -279,10 +280,6 @@ def run_hpo(args):
 
     print(f"Model input features: nodes={input_features['node_features']}, edges={input_features['edge_features']}")
     print(f"Using {args.mask_mode} masking at {args.mask_prob * 100:.1f}% probability")
-
-    if args.pretrained_model:
-        pretrained_source = os.path.basename(args.pretrained_model).split('_')[0]
-        print(f"Using pretrained model from {pretrained_source}: {args.pretrained_model}")
 
     # Create objective function
     objective = HPOObjective(args, train_loader, val_loader, test_loader, input_features)

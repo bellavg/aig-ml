@@ -79,15 +79,21 @@ def train_epoch(args, model, train_loader, optimizer, device):
             # Backpropagation
             optimizer.zero_grad()
             loss.backward()
-            optimizer.step()
+
+
+            # Apply gradient clipping BEFORE optimizer step
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
 
             # Accumulate losses
             for key, value in loss_dict.items():
                 epoch_losses[key] += value.item()
 
+
         except Exception as e:
             print(f"Error in batch {batch_idx}: {e}")
+            import traceback
+            traceback.print_exc()  # Print the full stack trace
             print(f"Skipping this batch and continuing...")
             continue
 

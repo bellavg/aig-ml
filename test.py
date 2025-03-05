@@ -4,6 +4,7 @@ from masking import create_masked_batch
 from loss import compute_loss
 from prediction import reconstruct_predictions
 
+# Fix for the edge_feature mode metrics calculation in test.py
 
 def validate(args, model, val_loader, device):
     """
@@ -94,16 +95,16 @@ def validate(args, model, val_loader, device):
 
             elif mask_mode == "edge_feature":
                 # Edge feature prediction accuracy
-                if 'edge_preds' in full_predictions and 'edge_features' in full_predictions['edge_preds']:
-                    if 'full_edge_features' in full_predictions and 'edge_mask' in targets and targets[
-                        'edge_mask'] is not None:
-                        pred_edge_features = torch.sigmoid(full_predictions['full_edge_features'])
-                        pred_labels = (pred_edge_features > 0.5).float()
+                # FIXED: Check directly for 'full_edge_features' as that's what reconstruct_predictions returns
+                if 'full_edge_features' in full_predictions and 'edge_mask' in targets and targets[
+                    'edge_mask'] is not None and targets['edge_mask'].sum() > 0:
+                    pred_edge_features = torch.sigmoid(full_predictions['full_edge_features'])
+                    pred_labels = (pred_edge_features > 0.5).float()
 
-                        # Calculate accuracy on masked edges
-                        edge_acc = (pred_labels[targets['edge_mask']] == targets['edge_attr_target'][
-                            targets['edge_mask']]).float().mean()
-                        metrics['edge_feature_accuracy'] += edge_acc.item()
+                    # Calculate accuracy on masked edges
+                    edge_acc = (pred_labels[targets['edge_mask']] == targets['edge_attr_target'][
+                        targets['edge_mask']]).float().mean()
+                    metrics['edge_feature_accuracy'] += edge_acc.item()
 
             elif mask_mode == "connectivity":
                 # Both edge existence and feature prediction

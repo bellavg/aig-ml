@@ -1,17 +1,15 @@
 from collections import defaultdict
 import torch
-from masking import create_masked_batch  # Import your enhanced masking function
-from loss import compute_loss
-
-from collections import defaultdict
-import torch
-from masking import create_masked_batch  # Import your enhanced masking function
+from masking import create_masked_batch
 from loss import compute_loss
 
 
 def train_epoch(args, model, train_loader, optimizer, device):
     """
-    Run one training epoch with support for all five masking modes.
+    Run one training epoch with support for the three masking modes:
+    1. "node_feature": Mask node features and predict them
+    2. "edge_feature": Mask edge features and predict them
+    3. "connectivity": Mask edges and predict both existence and features
 
     Args:
         args: Command line arguments including mask_prob and mask_mode
@@ -29,9 +27,10 @@ def train_epoch(args, model, train_loader, optimizer, device):
     # Determine masking mode from args
     mask_mode = args.mask_mode if hasattr(args, 'mask_mode') else "node_feature"
 
-    # For backward compatibility
+    # For backward compatibility with old configs
     if hasattr(args, 'gate_masking') and args.gate_masking:
-        mask_mode = "gate"
+        print("Warning: 'gate_masking' is deprecated. Using 'node_feature' mode instead.")
+        mask_mode = "node_feature"
 
     for batch_idx, batch in enumerate(train_loader):
         batch = batch.to(device)
@@ -63,28 +62,16 @@ def train_epoch(args, model, train_loader, optimizer, device):
                 targets['edge_mask'] = masked_batch.edge_mask
 
             # Add mode-specific information to targets
-            if mask_mode == "node_existence" and hasattr(masked_batch, 'node_existence_mask'):
-                targets['node_existence_mask'] = masked_batch.node_existence_mask
-                targets['node_existence_target'] = masked_batch.node_existence_target if hasattr(masked_batch,
-                                                                                                 'node_existence_target') else None
-
-            elif mask_mode == "edge_existence" and hasattr(masked_batch, 'edge_existence_mask'):
-                targets['edge_existence_mask'] = masked_batch.edge_existence_mask
-                targets['edge_existence_target'] = masked_batch.edge_existence_target if hasattr(masked_batch,
-                                                                                                 'edge_existence_target') else None
-
-            elif mask_mode == "removal" and hasattr(masked_batch, 'node_removal_mask'):
-                targets['node_removal_mask'] = masked_batch.node_removal_mask
-                targets['num_original_nodes'] = masked_batch.num_original_nodes if hasattr(masked_batch,
-                                                                                           'num_original_nodes') else None
-                targets['original_to_new_indices'] = masked_batch.original_to_new_indices if hasattr(masked_batch,
-                                                                                                     'original_to_new_indices') else None
-
-                # Add existence targets for removal mode
-                if hasattr(masked_batch, 'node_existence_target'):
-                    targets['node_existence_target'] = masked_batch.node_existence_target
-                if hasattr(masked_batch, 'edge_existence_target'):
-                    targets['edge_existence_target'] = masked_batch.edge_existence_target
+            if mask_mode == "connectivity":
+                # Add connectivity-specific target information
+                if hasattr(masked_batch, 'all_candidate_pairs'):
+                    targets['all_candidate_pairs'] = masked_batch.all_candidate_pairs
+                if hasattr(masked_batch, 'all_candidate_targets'):
+                    targets['all_candidate_targets'] = masked_batch.all_candidate_targets
+                if hasattr(masked_batch, 'connectivity_target'):
+                    targets['connectivity_target'] = masked_batch.connectivity_target
+                if hasattr(masked_batch, 'masked_edge_attr_target'):
+                    targets['masked_edge_attr_target'] = masked_batch.masked_edge_attr_target
 
             # Compute loss with awareness of the masking mode
             loss, loss_dict = compute_loss(predictions, targets)

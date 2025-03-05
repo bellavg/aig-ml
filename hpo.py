@@ -47,12 +47,12 @@ def parse_args():
     parser.add_argument('--mask_prob', type=float, default=0.20,
                         help="Masking probability for nodes/gates")
     parser.add_argument('--mask_mode', type=str, default="node_feature",
-                        choices=["node_feature", "edge_feature", "node_existence", "edge_existence", "removal"],
+                        choices=["node_feature", "edge_feature", "connectivity"],
                         help="Masking mode to use for training")
 
     # For backward compatibility
     parser.add_argument('--gate_masking', action='store_true',
-                        help="Enable gate masking (deprecated, use --mask_mode=node_existence)")
+                        help="Enable gate masking (deprecated, use --mask_mode=node_feature)")
 
     # HPO parameters
     parser.add_argument('--n_trials', type=int, default=50,
@@ -102,8 +102,6 @@ class HPOObjective:
     def __call__(self, trial):
         """Run a single HPO trial."""
         # Hyperparameter suggestions
-
-
         num_layers = trial.suggest_int('num_layers', 1, 8)
         num_heads = trial.suggest_categorical("num_heads",[2, 4, 8, 16])
         hidden_dim_choices = [d for d in [32, 64, 128, 256, 512, 1024] if d % num_heads == 0]
@@ -195,7 +193,7 @@ class HPOObjective:
                 break
 
             epoch_log = (f"Trial {trial.number}, Epoch {epoch + 1}/{self.args.hpo_epochs}, "
-                         f"Train Loss: {train_losses['total_loss']:.4f}, "
+                         f"Train Loss: {train_losses.get('total_loss', train_losses.get('node_loss', 0.0)):.4f}, "
                          f"Val Loss: {current_val_loss:.4f}")
             print(epoch_log)
 
@@ -225,8 +223,8 @@ def run_hpo(args):
 
     # Handle backward compatibility for gate_masking
     if args.gate_masking:
-        args.mask_mode = "node_existence"
-        print("Warning: --gate_masking is deprecated, use --mask_mode=node_existence instead")
+        args.mask_mode = "node_feature"
+        print("Warning: --gate_masking is deprecated, use --mask_mode=node_feature instead")
 
     # Set up study name if not provided
     if args.study_name is None:

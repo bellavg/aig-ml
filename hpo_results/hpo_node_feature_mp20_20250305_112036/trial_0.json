@@ -1,0 +1,15 @@
+{
+    "trial_number": 0,
+    "params": {
+        "num_layers": 7,
+        "num_heads": 4,
+        "hidden_dim": 1024,
+        "dropout": 0.5,
+        "learning_rate": 0.0003727155167169152
+    },
+    "best_val_loss": 0.23779699206352234,
+    "test_loss": 1.5113779306411743,
+    "test_metrics": {
+        "node_accuracy": 0.75
+    }
+}

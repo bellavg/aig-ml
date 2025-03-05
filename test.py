@@ -1,13 +1,16 @@
-import argparse
-from collections import defaultdict
 import torch
-# Import your custom modules
+from collections import defaultdict
 from masking import create_masked_batch
 from loss import compute_loss
+from prediction import reconstruct_predictions
+
 
 def validate(args, model, val_loader, device):
     """
-    Run validation with support for all five masking modes.
+    Run validation with support for the three masking modes:
+    1. "node_feature": Mask node features and predict them
+    2. "edge_feature": Mask edge features and predict them
+    3. "connectivity": Mask edges and predict both existence and features
 
     Args:
         args: Command line arguments including mask_prob and mask_mode
@@ -19,8 +22,6 @@ def validate(args, model, val_loader, device):
         val_losses: Dictionary of average losses for validation
         metrics: Dictionary of validation metrics
     """
-    from model import reconstruct_predictions  # Import the reconstruction function
-
     model.eval()
     val_losses = defaultdict(float)
     metrics = defaultdict(float)
@@ -28,9 +29,10 @@ def validate(args, model, val_loader, device):
     # Determine masking mode from args
     mask_mode = args.mask_mode if hasattr(args, 'mask_mode') else "node_feature"
 
-    # For backward compatibility
+    # For backward compatibility with old configs
     if hasattr(args, 'gate_masking') and args.gate_masking:
-        mask_mode = "gate"
+        print("Warning: 'gate_masking' is deprecated. Using 'node_feature' mode instead.")
+        mask_mode = "node_feature"
 
     with torch.no_grad():
         for batch in val_loader:
@@ -52,34 +54,22 @@ def validate(args, model, val_loader, device):
                 'edge_index_target': masked_batch.edge_index_target,
                 'edge_attr_target': masked_batch.edge_attr_target if hasattr(masked_batch,
                                                                              'edge_attr_target') else None,
-                'node_mask': masked_batch.node_mask,
+                'node_mask': masked_batch.node_mask if hasattr(masked_batch, 'node_mask') else None,
                 'edge_mask': masked_batch.edge_mask if hasattr(masked_batch, 'edge_mask') else None,
                 'mask_mode': masked_batch.mask_mode
             }
 
             # Add mode-specific information to targets
-            if mask_mode == "node_existence" and hasattr(masked_batch, 'node_existence_mask'):
-                targets['node_existence_mask'] = masked_batch.node_existence_mask
-                targets['node_existence_target'] = masked_batch.node_existence_target if hasattr(masked_batch,
-                                                                                                 'node_existence_target') else None
-
-            elif mask_mode == "edge_existence" and hasattr(masked_batch, 'edge_existence_mask'):
-                targets['edge_existence_mask'] = masked_batch.edge_existence_mask
-                targets['edge_existence_target'] = masked_batch.edge_existence_target if hasattr(masked_batch,
-                                                                                                 'edge_existence_target') else None
-
-            elif mask_mode == "removal" and hasattr(masked_batch, 'node_removal_mask'):
-                targets['node_removal_mask'] = masked_batch.node_removal_mask
-                targets['num_original_nodes'] = masked_batch.num_original_nodes if hasattr(masked_batch,
-                                                                                           'num_original_nodes') else None
-                targets['original_to_new_indices'] = masked_batch.original_to_new_indices if hasattr(masked_batch,
-                                                                                                     'original_to_new_indices') else None
-
-                # Add existence targets for removal mode
-                if hasattr(masked_batch, 'node_existence_target'):
-                    targets['node_existence_target'] = masked_batch.node_existence_target
-                if hasattr(masked_batch, 'edge_existence_target'):
-                    targets['edge_existence_target'] = masked_batch.edge_existence_target
+            if mask_mode == "connectivity":
+                # Add connectivity-specific target information
+                if hasattr(masked_batch, 'all_candidate_pairs'):
+                    targets['all_candidate_pairs'] = masked_batch.all_candidate_pairs
+                if hasattr(masked_batch, 'all_candidate_targets'):
+                    targets['all_candidate_targets'] = masked_batch.all_candidate_targets
+                if hasattr(masked_batch, 'connectivity_target'):
+                    targets['connectivity_target'] = masked_batch.connectivity_target
+                if hasattr(masked_batch, 'masked_edge_attr_target'):
+                    targets['masked_edge_attr_target'] = masked_batch.masked_edge_attr_target
 
             # Compute validation loss
             loss, loss_dict = compute_loss(predictions, targets)
@@ -92,60 +82,47 @@ def validate(args, model, val_loader, device):
             full_predictions = reconstruct_predictions(predictions, targets)
 
             # Compute metrics based on the masking mode
-            if mask_mode in ["node_feature", "node_existence", "gate"]:
+            if mask_mode == "node_feature":
                 # Node feature prediction accuracy
-                if 'node_features' in full_predictions and 'node_mask' in targets and targets['node_mask'].sum() > 0:
+                if 'node_features' in full_predictions and 'node_mask' in targets and targets[
+                    'node_mask'] is not None and targets['node_mask'].sum() > 0:
                     pred_node_features = torch.sigmoid(full_predictions['node_features'])
                     pred_labels = (pred_node_features > 0.5).float()
                     node_acc = (pred_labels[targets['node_mask']] == targets['x_target'][
                         targets['node_mask']]).float().mean()
                     metrics['node_accuracy'] += node_acc.item()
 
-            if mask_mode in ["edge_feature", "edge_existence", "gate"]:
+            elif mask_mode == "edge_feature":
                 # Edge feature prediction accuracy
                 if 'edge_preds' in full_predictions and 'edge_features' in full_predictions['edge_preds']:
-                    # This would depend on how your reconstruction function handles edge features
-                    if 'masked_edges' in full_predictions['edge_preds'] and 'edge_mask' in targets:
-                        # Calculate accuracy for edge features if available
-                        pass  # Implement based on your model's output structure
+                    if 'full_edge_features' in full_predictions and 'edge_mask' in targets and targets[
+                        'edge_mask'] is not None:
+                        pred_edge_features = torch.sigmoid(full_predictions['full_edge_features'])
+                        pred_labels = (pred_edge_features > 0.5).float()
 
-            # Node existence accuracy (for modes that predict it)
-            if mask_mode in ["node_existence", "removal"]:
-                if mask_mode == "node_existence" and 'node_existence' in full_predictions:
-                    pred_node_existence = (full_predictions['node_existence'] > 0.5).float()
-                    if 'node_existence_mask' in targets and 'node_existence_target' in targets:
-                        mask = targets['node_existence_mask']
-                        target = targets['node_existence_target'][mask]
-                        node_existence_acc = (pred_node_existence[mask] == target).float().mean()
-                        metrics['node_existence_accuracy'] += node_existence_acc.item()
+                        # Calculate accuracy on masked edges
+                        edge_acc = (pred_labels[targets['edge_mask']] == targets['edge_attr_target'][
+                            targets['edge_mask']]).float().mean()
+                        metrics['edge_feature_accuracy'] += edge_acc.item()
 
-                elif mask_mode == "removal" and 'full_node_existence' in full_predictions:
-                    pred_node_existence = (full_predictions['full_node_existence'] > 0.5).float()
-                    if 'node_existence_target' in targets:
-                        node_existence_target = targets['node_existence_target']
-                        node_existence_acc = (pred_node_existence == node_existence_target).float().mean()
-                        metrics['node_existence_accuracy'] += node_existence_acc.item()
+            elif mask_mode == "connectivity":
+                # Both edge existence and feature prediction
 
-            # Edge existence accuracy (for modes that predict it)
-            if mask_mode in ["edge_existence", "removal"]:
-                if mask_mode == "edge_existence" and 'edge_preds' in full_predictions and 'edge_existence' in \
-                        full_predictions['edge_preds']:
-                    pred_edge_existence = (full_predictions['edge_preds']['edge_existence'] > 0.5).float()
-                    if 'edge_existence_mask' in targets and 'edge_existence_target' in targets:
-                        # Get relevant subset of edge existence targets
-                        edge_mask = targets['edge_mask']
-                        target_existence = targets['edge_existence_target'][edge_mask]
-                        # Ensure shapes match
-                        valid_count = min(pred_edge_existence.size(0), target_existence.size(0))
-                        if valid_count > 0:
-                            edge_existence_acc = (pred_edge_existence[:valid_count] == target_existence[
-                                                                                       :valid_count]).float().mean()
-                            metrics['edge_existence_accuracy'] += edge_existence_acc.item()
+                # Edge existence accuracy
+                if 'edge_existence_preds' in full_predictions and 'all_candidate_targets' in targets:
+                    pred_existence = (torch.sigmoid(full_predictions['edge_existence_preds']) > 0.5).float()
+                    existence_acc = (pred_existence.squeeze() == targets['all_candidate_targets']).float().mean()
+                    metrics['edge_existence_accuracy'] += existence_acc.item()
 
-                elif mask_mode == "removal" and 'edge_existence' in full_predictions:
-                    # For removal mode, edge existence is handled differently depending on implementation
-                    # This would depend on how your reconstruct_predictions function works
-                    pass  # Implement based on your specific implementation
+                # Edge feature accuracy (only for existing edges)
+                if 'edge_feature_preds' in full_predictions and 'masked_edge_attr_target' in targets:
+                    pred_features = torch.sigmoid(full_predictions['edge_feature_preds'])
+                    pred_labels = (pred_features > 0.5).float()
+
+                    # This is a bit tricky - we only care about feature accuracy for edges that exist
+                    # For simplicity, we'll calculate on all masked edges
+                    feature_acc = (pred_labels == targets['masked_edge_attr_target']).float().mean()
+                    metrics['edge_feature_accuracy'] += feature_acc.item()
 
     # Average losses and metrics
     for key in val_losses:

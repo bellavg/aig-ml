@@ -69,11 +69,11 @@ def parse_args():
     parser.add_argument('--mask_prob', type=float, default=0.20,
                         help="Masking probability for nodes/gates")
     parser.add_argument('--mask_mode', type=str, default="node_feature",
-                        choices=["node_feature", "edge_feature", "node_existence", "edge_existence", "removal"],
+                        choices=["node_feature", "edge_feature", "connectivity"],
                         help="Masking mode to use for training")
     # For backward compatibility
     parser.add_argument('--gate_masking', action='store_true',
-                        help="Enable gate masking (equivalent to --mask_mode=gate)")
+                        help="Enable gate masking (equivalent to --mask_mode=node_feature)")
 
     # Training parameters
     parser.add_argument('--num_epochs', type=int, default=2,
@@ -112,8 +112,8 @@ def main():
 
     # Handle backward compatibility: if gate_masking is set, override mask_mode
     if args.gate_masking:
-        args.mask_mode = "node_existence"  # Changed from "gate" to align with the new 5-mode system
-        print("Warning: --gate_masking is deprecated, use --mask_mode=node_existence instead")
+        args.mask_mode = "node_feature"
+        print("Warning: --gate_masking is deprecated, use --mask_mode=node_feature instead")
 
     # Set up experiment name if not provided
     if args.exp_name is None:
@@ -258,6 +258,9 @@ def main():
         "seed": args.seed
     }
 
+    # Initialize best_model_loaded to help track if the best model was successfully saved
+    best_model_loaded = False
+
     # Training loop
     for epoch in range(args.num_epochs):
 
@@ -279,15 +282,24 @@ def main():
             training_metrics.setdefault("val_metrics", []).append(val_metrics)
 
             # Check for improvement - use total_loss if available, else fall back to node_loss
-            current_val_loss = val_losses.get('total_loss', val_losses.get('node_loss', float('inf')))
+            current_val_loss = val_losses.get('total_loss', val_losses.get('node_loss', val_losses.get('edge_feature_loss', float('inf'))))
             if current_val_loss < best_val_loss:
                 best_val_loss = current_val_loss
                 training_metrics["best_epoch"] = epoch + 1
                 training_metrics["best_val_loss"] = best_val_loss
 
                 # Save best model
-                torch.save(model.state_dict(), best_model_path)
-                epoch_log += f" (New best model saved)"
+                try:
+                    # Ensure model path exists
+                    os.makedirs(os.path.dirname(best_model_path), exist_ok=True)
+                    torch.save(model.state_dict(), best_model_path)
+                    best_model_loaded = True
+                    epoch_log += f" (New best model saved to {best_model_path})"
+                except Exception as e:
+                    print(f"Error saving best model: {e}")
+                    epoch_log += f" (Error saving best model: {e})"
+                    best_model_loaded = False
+
                 no_improve_count = 0
             else:
                 no_improve_count += 1
@@ -306,10 +318,22 @@ def main():
             f.write(epoch_log + "\n")
 
     # Save final model
-    torch.save(model.state_dict(), final_model_path)
+    try:
+        torch.save(model.state_dict(), final_model_path)
+        print(f"Final model saved to: {final_model_path}")
+    except Exception as e:
+        print(f"Error saving final model: {e}")
 
-    # Load best model for final evaluation
-    model.load_state_dict(torch.load(best_model_path))
+    # Load best model for final evaluation only if it was successfully saved
+    if best_model_loaded and os.path.exists(best_model_path):
+        try:
+            model.load_state_dict(torch.load(best_model_path))
+            print(f"Loaded best model from {best_model_path} for evaluation")
+        except Exception as e:
+            print(f"Error loading best model for evaluation: {e}")
+            print("Using final model state for evaluation instead")
+    else:
+        print("Best model wasn't saved successfully. Using current model state for evaluation.")
 
     # Evaluate on test set
     test_losses, test_metrics = validate(args, model, test_loader, device)
@@ -320,8 +344,12 @@ def main():
     # Save final metrics
     training_metrics["test_losses"] = dict(test_losses)
     training_metrics["test_metrics"] = test_metrics
-    with open(results_path, 'w') as f:
-        json.dump(training_metrics, f, indent=4)
+    try:
+        with open(results_path, 'w') as f:
+            json.dump(training_metrics, f, indent=4)
+        print(f"Results saved to: {results_path}")
+    except Exception as e:
+        print(f"Error saving results: {e}")
 
     # Log completion
     with open(log_path, 'a') as f:
@@ -331,7 +359,8 @@ def main():
             f"Best model: epoch {training_metrics['best_epoch']}, val_loss={training_metrics['best_val_loss']:.4f}\n")
 
     print(f"Experiment {args.exp_name} completed!")
-    print(f"Best model saved to: {best_model_path}")
+    if best_model_loaded:
+        print(f"Best model saved to: {best_model_path}")
     print(f"Results saved to: {results_path}")
 
 

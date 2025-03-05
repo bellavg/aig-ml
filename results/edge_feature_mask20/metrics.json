@@ -1,0 +1,32 @@
+{
+    "train_losses": [
+        {
+            "edge_feature_loss": 0.7069422801335653
+        },
+        {
+            "edge_feature_loss": 0.6881998976071676
+        }
+    ],
+    "val_losses": [
+        {
+            "edge_feature_loss": 0.7750042676925659
+        },
+        {
+            "edge_feature_loss": 0.6171987056732178
+        }
+    ],
+    "best_epoch": 2,
+    "best_val_loss": 0.6171987056732178,
+    "pretrained_model": null,
+    "masking_mode": "edge_feature",
+    "mask_prob": 0.2,
+    "seed": 42,
+    "val_metrics": [
+        {},
+        {}
+    ],
+    "test_losses": {
+        "edge_feature_loss": 0.7737629413604736
+    },
+    "test_metrics": {}
+}

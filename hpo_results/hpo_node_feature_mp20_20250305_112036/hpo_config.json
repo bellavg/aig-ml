@@ -1,0 +1,20 @@
+{
+    "file_path": null,
+    "root": "",
+    "processed_file": "data.pt",
+    "num_graphs": 24,
+    "max_nodes": 120,
+    "mask_prob": 0.2,
+    "mask_mode": "node_feature",
+    "gate_masking": false,
+    "n_trials": 1,
+    "hpo_epochs": 2,
+    "study_name": "hpo_node_feature_mp20_20250305_112036",
+    "optimize_batch_size": false,
+    "val_ratio": 0.2,
+    "test_ratio": 0.1,
+    "device": "cuda",
+    "seed": 42,
+    "pretrained_model": null,
+    "results_dir": "./hpo_results/"
+}

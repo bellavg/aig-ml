@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from layer import EdgeAwareGraphTransformerLayer
 
+
 class AIGTransformer(nn.Module):
     def __init__(
             self,
@@ -37,27 +38,11 @@ class AIGTransformer(nn.Module):
             for _ in range(num_layers)
         ])
 
-        # Node existence prediction
-        self.node_existence_predictor = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_dim // 2, 1),
-            nn.Sigmoid()
-        )
-
         # Task-specific head for node feature prediction
         self.node_predictor = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, node_features)
-        )
-
-        # Edge existence prediction
-        self.edge_existence_predictor = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1),
-            nn.Sigmoid()
         )
 
         # Edge feature prediction
@@ -67,11 +52,21 @@ class AIGTransformer(nn.Module):
             nn.Linear(hidden_dim, edge_features)
         )
 
+        # Edge existence prediction (for connectivity mode)
+        self.edge_existence_predictor = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1)
+        )
+
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, data):
         """
-        Forward pass for batched PyG Data objects with support for all masking modes
+        Forward pass for batched PyG Data objects with support for three masking modes:
+        1. "node_feature": Mask node features and predict them
+        2. "edge_feature": Mask edge features and predict them
+        3. "connectivity": Mask edges and predict both existence and features
 
         Args:
             data: PyG Data object with:
@@ -81,7 +76,7 @@ class AIGTransformer(nn.Module):
                 - batch: Batch assignment [num_nodes]
                 - node_mask: Node feature masking info [num_nodes]
                 - edge_mask: Edge masking info [num_edges in target]
-                - mask_mode: One of the five masking modes
+                - mask_mode: One of the three masking modes
         """
         x, edge_index = data.x, data.edge_index
         edge_attr = data.edge_attr if hasattr(data, 'edge_attr') else None
@@ -149,16 +144,34 @@ class AIGTransformer(nn.Module):
                         'edge_features': edge_features
                     }
 
-        elif mask_mode == "node_existence":
-            # Predict node features and node existence
-            if hasattr(data, 'node_existence_mask') and data.node_existence_mask.sum() > 0:
-                node_existence = self.node_existence_predictor(x)
-                results['node_existence'] = node_existence
-                results['node_existence_mask'] = data.node_existence_mask
+        elif mask_mode == "connectivity":
+            # Predict both edge existence and features
+            if hasattr(data, 'masked_edge_node_pairs') and hasattr(data, 'all_candidate_pairs'):
+                # For positive examples (masked edges that should exist)
+                all_candidate_pairs = data.all_candidate_pairs
 
-        elif mask_mode == "edge_existence":
-            # Predict edge features and edge existence
-            if hasattr(data, 'edge_index_target') and hasattr(data, 'edge_mask') and edge_mask.sum() > 0:
+                # Get node embeddings for source and target nodes of all candidates
+                src_embeddings = x[all_candidate_pairs[0]]
+                dst_embeddings = x[all_candidate_pairs[1]]
+
+                # Concatenate embeddings
+                edge_embeddings = torch.cat([src_embeddings, dst_embeddings], dim=1)
+
+                # Predict edge existence
+                edge_existence = self.edge_existence_predictor(edge_embeddings)
+
+                # Predict edge features (only matters for existing edges, but predict for all)
+                edge_features = self.edge_feature_predictor(edge_embeddings)
+
+                # Store edge predictions
+                results['edge_preds'] = {
+                    'all_candidate_pairs': all_candidate_pairs,
+                    'edge_existence': edge_existence,
+                    'edge_features': edge_features
+                }
+
+            # Fallback for older data format (for backward compatibility)
+            elif hasattr(data, 'edge_index_target') and hasattr(data, 'edge_mask') and edge_mask.sum() > 0:
                 edge_index_target = data.edge_index_target
                 masked_edges = edge_index_target[:, edge_mask]
 
@@ -186,44 +199,4 @@ class AIGTransformer(nn.Module):
                         'edge_features': edge_features
                     }
 
-        elif mask_mode == "removal":
-            # We need to map predictions back to original node indices
-            # Predict existence for all nodes in the reduced graph
-            node_existence = self.node_existence_predictor(x)
-            results['node_existence'] = node_existence
-
-            # Store mapping info for reconstruction
-            if hasattr(data, 'original_to_new_indices'):
-                results['original_to_new_indices'] = data.original_to_new_indices
-
-            if hasattr(data, 'node_removal_mask'):
-                results['node_removal_mask'] = data.node_removal_mask
-
-            if hasattr(data, 'num_original_nodes'):
-                results['num_original_nodes'] = data.num_original_nodes
-
-            # Predict edge existence and features for reconstruction
-            if hasattr(data, 'edge_index_target') and hasattr(data, 'edge_mask') and edge_mask.sum() > 0:
-                # For edges that were connected to removed nodes
-                # We need to map these to the remaining nodes
-                edge_index_target = data.edge_index_target
-
-                # We can't directly use the masked edges because some nodes are removed
-                # Instead, we'll generate potential edge candidates from the current nodes
-                if hasattr(data, 'old_to_new_mapping'):
-                    # Generate new edge candidates for prediction
-                    edge_preds = {}
-
-                    # This is a complex case - in practice, you might want a more
-                    # efficient approach than generating all possible edges
-                    # For now, just store information needed for reconstruction
-                    edge_preds['removed_nodes_info'] = {
-                        'old_to_new_mapping': data.old_to_new_mapping,
-                        'node_removal_mask': data.node_removal_mask,
-                        'original_edges': edge_index_target
-                    }
-
-                    results['edge_preds'] = edge_preds
-
         return results
-

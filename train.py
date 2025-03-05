@@ -93,6 +93,7 @@ def train_epoch(args, model, train_loader, optimizer, device):
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
             # Accumulate losses
             for key, value in loss_dict.items():

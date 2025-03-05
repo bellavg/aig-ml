@@ -6,9 +6,7 @@ def create_masked_batch(batch, mp=0.20, mask_mode="node_feature"):
     Create masked batch with support for five different masking modes:
     1. "node_feature": Mask only node features
     2. "edge_feature": Mask only edge features
-    3. "node_existence": Mask nodes and predict both existence and features
-    4. "edge_existence": Mask edges and predict both existence and features
-    5. "removal": Completely remove nodes and their edges from the graph
+    3. "connectivity": Mask edges and predict both existence and features
 
     Args:
         batch: PyG Data object containing the batch
@@ -22,7 +20,7 @@ def create_masked_batch(batch, mp=0.20, mask_mode="node_feature"):
 
     # Initialize masking information
     is_and_gate, node_mask, node_existence_mask, batch_idx = _initialize_node_masks(batch)
-    edge_mask, edge_existence_mask = _initialize_edge_masks(batch)
+    edge_mask, connectivity_mask = _initialize_edge_masks(batch)
 
     # Store original values as targets
     _store_targets(masked_batch, batch)
@@ -33,21 +31,16 @@ def create_masked_batch(batch, mp=0.20, mask_mode="node_feature"):
         if mask_mode == "node_existence":
             node_existence_mask = node_mask.clone()
 
-    if mask_mode in ["edge_feature", "edge_existence"]:
+    if mask_mode in ["edge_feature", "connectivity"]:
         edge_mask = _create_edge_masks(batch, mp)
-        if mask_mode == "edge_existence":
-            edge_existence_mask = edge_mask.clone()
-
-    if mask_mode == "removal":
-        edge_mask = _identify_connected_edges(batch, node_mask)
+        if mask_mode == "connectivity":
+            connectivity_mask = edge_mask.clone()
 
     # Apply the appropriate masking operation based on mode
     masking_functions = {
         "node_feature": _apply_node_feature_masking,
         "edge_feature": _apply_edge_feature_masking,
-        "node_existence": _apply_node_existence_masking,
-        "edge_existence": _apply_edge_existence_masking,
-        "removal": _apply_node_removal_masking
+        "connectivity": _apply_connectivity_masking,
     }
 
     masking_functions[mask_mode](
@@ -56,7 +49,7 @@ def create_masked_batch(batch, mp=0.20, mask_mode="node_feature"):
         node_mask,
         edge_mask,
         node_existence_mask,
-        edge_existence_mask
+        connectivity_mask
     )
 
     # Store masking settings
@@ -84,9 +77,9 @@ def _initialize_node_masks(batch):
 def _initialize_edge_masks(batch):
     """Initialize edge masks"""
     edge_mask = torch.zeros(batch.edge_index.size(1), dtype=torch.bool, device=batch.edge_index.device)
-    edge_existence_mask = torch.zeros(batch.edge_index.size(1), dtype=torch.bool, device=batch.edge_index.device)
+    connectivity_mask = torch.zeros(batch.edge_index.size(1), dtype=torch.bool, device=batch.edge_index.device)
 
-    return edge_mask, edge_existence_mask
+    return edge_mask, connectivity_mask
 
 
 def _store_targets(masked_batch, batch):
@@ -143,7 +136,7 @@ def _identify_connected_edges(batch, node_mask):
     return edge_mask
 
 
-def _apply_node_feature_masking(masked_batch, batch, node_mask, edge_mask, node_existence_mask, edge_existence_mask):
+def _apply_node_feature_masking(masked_batch, batch, node_mask, edge_mask, node_existence_mask, connectivity_mask):
     """Apply masking for node_feature mode"""
     # Mask only node features
     if node_mask.sum() > 0:
@@ -153,7 +146,7 @@ def _apply_node_feature_masking(masked_batch, batch, node_mask, edge_mask, node_
     masked_batch.node_mask = node_mask
 
 
-def _apply_edge_feature_masking(masked_batch, batch, node_mask, edge_mask, node_existence_mask, edge_existence_mask):
+def _apply_edge_feature_masking(masked_batch, batch, node_mask, edge_mask, node_existence_mask, connectivity_mask):
     """Apply masking for edge_feature mode"""
     # Mask edge features but keep the edges
     masked_batch.edge_mask = edge_mask
@@ -171,88 +164,95 @@ def _apply_edge_feature_masking(masked_batch, batch, node_mask, edge_mask, node_
     masked_batch.node_mask = node_mask
 
 
-def _apply_node_existence_masking(masked_batch, batch, node_mask, edge_mask, node_existence_mask, edge_existence_mask):
-    """Apply masking for node_existence mode"""
-    # Mask node features and mark for existence prediction
-    if node_mask.sum() > 0:
-        masked_batch.x[node_mask] = 0.0  # Zero out masked nodes
+def _apply_connectivity_masking(masked_batch, batch, node_mask, edge_mask, node_existence_mask, connectivity_mask):
+    """Improved edge existence masking using candidate edge strategy with negative examples."""
+    # Store original edge information
+    masked_batch.edge_index_target = batch.edge_index.clone()
+    masked_batch.edge_attr_target = batch.edge_attr.clone() if hasattr(batch, 'edge_attr') else None
 
-    # Store node existence mask separately
-    masked_batch.node_existence_mask = node_existence_mask
-    masked_batch.node_existence_target = torch.ones(batch.x.size(0), 1, device=batch.x.device)
-
-    # Store the node mask
-    masked_batch.node_mask = node_mask
-
-
-def _apply_edge_existence_masking(masked_batch, batch, node_mask, edge_mask, node_existence_mask, edge_existence_mask):
-    """Apply masking for edge_existence mode"""
-    # Mask edge features and mark for existence prediction
+    # Store which edges are masked
     masked_batch.edge_mask = edge_mask
-    masked_batch.edge_existence_mask = edge_existence_mask
+    masked_batch.masked_edge_indices = torch.nonzero(edge_mask).squeeze(-1)
 
-    # For masked edges, zero out features but keep the edge
-    if edge_mask.sum() > 0 and hasattr(batch, 'edge_attr'):
-        # Create a copy of edge attributes
-        masked_edge_attr = batch.edge_attr.clone()
-        # Zero out masked edge features
-        masked_edge_attr[edge_mask] = 0.0
-        masked_batch.edge_attr = masked_edge_attr
+    # Remove masked edges from the graph
+    keep_edges = ~edge_mask
+    masked_batch.edge_index = batch.edge_index[:, keep_edges]
+    if hasattr(batch, 'edge_attr'):
+        masked_batch.edge_attr = batch.edge_attr[keep_edges]
 
-    # Store edge existence target: all masked edges should exist
-    masked_batch.edge_existence_target = torch.ones(batch.edge_index.size(1), 1, device=batch.edge_index.device)
+    # Store source and destination nodes of masked edges
+    src_nodes = batch.edge_index[0, edge_mask]
+    dst_nodes = batch.edge_index[1, edge_mask]
 
-    # Store the node mask even though we're not masking nodes
-    # This is necessary because train_epoch expects it to exist
+    # For each node pair in masked edges, store the information needed for prediction
+    masked_batch.masked_edge_node_pairs = torch.stack([src_nodes, dst_nodes], dim=0)
+    masked_batch.connectivity_target = torch.ones(edge_mask.sum(), 1, device=batch.edge_index.device)
+
+    if hasattr(batch, 'edge_attr'):
+        masked_batch.masked_edge_attr_target = batch.edge_attr[edge_mask]
+
+    # Create validation candidates - node pairs that could have edges but don't in the original
+    negative_pairs = []
+    batch_idx = batch.batch if hasattr(batch, 'batch') else None
+
+    if batch_idx is not None:
+        # For each graph in the batch
+        for b in torch.unique(batch_idx):
+            # Get nodes in this graph
+            graph_nodes = torch.nonzero(batch_idx == b).squeeze(-1)
+
+            if len(graph_nodes) > 5:  # Only for graphs with enough nodes
+                # Sample a few random node pairs that don't have edges
+                num_neg_samples = min(10, edge_mask.sum().item())  # Add same number as masked edges or max 10
+
+                for _ in range(num_neg_samples):
+                    attempts = 0
+                    while attempts < 20:  # Limit attempts to avoid infinite loop
+                        attempts += 1
+                        idx1 = torch.randint(0, len(graph_nodes), (1,)).item()
+                        idx2 = torch.randint(0, len(graph_nodes), (1,)).item()
+
+                        if idx1 == idx2:  # Skip self-loops
+                            continue
+
+                        src = graph_nodes[idx1]
+                        dst = graph_nodes[idx2]
+
+                        # Check if this edge already exists in the original graph
+                        edge_exists = False
+                        for e in range(batch.edge_index.size(1)):
+                            if (batch.edge_index[0, e] == src and batch.edge_index[1, e] == dst):
+                                edge_exists = True
+                                break
+
+                        if not edge_exists:
+                            negative_pairs.append((src.item(), dst.item()))
+                            break
+
+    # Add negative examples if we found any
+    if len(negative_pairs) > 0:
+        # Convert list of tuples to tensor
+        neg_src = [p[0] for p in negative_pairs]
+        neg_dst = [p[1] for p in negative_pairs]
+        neg_src_tensor = torch.tensor(neg_src, device=batch.edge_index.device)
+        neg_dst_tensor = torch.tensor(neg_dst, device=batch.edge_index.device)
+
+        negative_pair_tensor = torch.stack([neg_src_tensor, neg_dst_tensor], dim=0)
+        masked_batch.negative_edge_pairs = negative_pair_tensor
+        masked_batch.negative_edge_targets = torch.zeros(len(negative_pairs), 1, device=batch.edge_index.device)
+
+        # Store combined positive and negative examples for training
+        # Positive examples (masked edges that should exist)
+        pos_pairs = masked_batch.masked_edge_node_pairs
+        pos_targets = masked_batch.connectivity_target
+
+        # Combine positive and negative examples
+        all_pairs = torch.cat([pos_pairs, negative_pair_tensor], dim=1)
+        all_targets = torch.cat([pos_targets, masked_batch.negative_edge_targets], dim=0)
+
+        masked_batch.all_candidate_pairs = all_pairs
+        masked_batch.all_candidate_targets = all_targets
+
+    # Store the node mask for consistency
     masked_batch.node_mask = node_mask
 
-
-def _apply_node_removal_masking(masked_batch, batch, node_mask, edge_mask, node_existence_mask, edge_existence_mask):
-    """Apply masking for removal mode"""
-    # Store original node removal mask for reconstruction
-    masked_batch.node_removal_mask = node_mask.clone()
-    masked_batch.edge_mask = edge_mask.clone()
-
-    # For removal, we actually remove the nodes and their edges
-    if node_mask.sum() > 0:
-        # Get indices of nodes to keep
-        keep_nodes = ~node_mask
-        nodes_to_keep = torch.nonzero(keep_nodes).squeeze(-1)
-
-        # Create a mapping from old indices to new indices
-        old_to_new = torch.full((batch.x.size(0),), -1, dtype=torch.long, device=batch.x.device)
-        for new_idx, old_idx in enumerate(nodes_to_keep):
-            old_to_new[old_idx] = new_idx
-
-        # Update node features and batch assignment
-        masked_batch.x = masked_batch.x[keep_nodes]
-        if hasattr(batch, 'batch'):
-            masked_batch.batch = batch.batch[keep_nodes]
-
-        # Track original node indices for reconstruction
-        masked_batch.original_to_new_indices = torch.arange(batch.x.size(0), device=batch.x.device)[keep_nodes]
-        masked_batch.old_to_new_mapping = old_to_new
-        masked_batch.num_original_nodes = batch.x.size(0)
-
-        # Keep only edges that don't involve removed nodes
-        keep_edges = ~edge_mask
-        masked_batch.edge_index = batch.edge_index[:, keep_edges]
-        if hasattr(batch, 'edge_attr'):
-            masked_batch.edge_attr = batch.edge_attr[keep_edges]
-
-        # Remap edge indices to the new node indices
-        if masked_batch.edge_index.size(1) > 0:
-            for i in range(2):  # For both source and target nodes
-                masked_batch.edge_index[i] = old_to_new[masked_batch.edge_index[i]]
-
-        # Create a new node mask that matches the reduced graph size
-        # Since we've removed nodes, no nodes are masked in the reduced graph
-        new_node_mask = torch.zeros(masked_batch.x.size(0), dtype=torch.bool, device=masked_batch.x.device)
-        masked_batch.node_mask = new_node_mask
-
-    # Create existence targets
-    masked_batch.node_existence_target = torch.ones(batch.x.size(0), 1, device=batch.x.device)
-    masked_batch.node_existence_target[node_mask] = 0.0  # Removed nodes should not exist
-
-    masked_batch.edge_existence_target = torch.ones(batch.edge_index.size(1), 1, device=batch.edge_index.device)
-    masked_batch.edge_existence_target[edge_mask] = 0.0  # Edges to removed nodes should not exist

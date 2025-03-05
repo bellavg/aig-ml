@@ -12,7 +12,8 @@ from datetime import datetime
 
 # Import your custom modules
 from aig_dataset import AIGDataset
-from model import AIGTransformer, reconstruct_predictions
+from model import AIGTransformer
+from prediction import reconstruct_predictions
 from train import train_epoch
 from test import validate
 

@@ -82,7 +82,7 @@ def parse_args():
                         help="Batch size for training")
     parser.add_argument('--lr', type=float, default=0.001,
                         help="Learning rate")
-    parser.add_argument('--early_stopping', type=int, default=10,
+    parser.add_argument('--early_stopping', type=int, default=3,
                         help="Number of epochs to wait for improvement before early stopping")
     parser.add_argument('--seed', type=int, default=42,
                         help="Random seed for reproducibility")

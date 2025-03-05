@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --partition=gpu
 #SBATCH --gpus=1
-#SBATCH --job-name=progressive_mask_optimized
+#SBATCH --job-name=node_mask
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=18
 #SBATCH --time=48:00:00
-#SBATCH --output=progressive_mask_optimized_%A.out
+#SBATCH --output=node_mask_%A.out
 
 # Load required modules
 module purge

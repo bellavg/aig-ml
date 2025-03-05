@@ -26,8 +26,8 @@ MASK_PROB=0.4
 SEED=42
 
 # Create timestamp for unique study name
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-STUDY_NAME="hpo_node_feature_mp${MASK_PROB/./}_${TIMESTAMP}"
+TIMESTAMP=$(date +%Y%m%d_%H)
+STUDY_NAME="hpo_node_mp${MASK_PROB/./}_${TIMESTAMP}"
 
 echo "Starting node feature masking hyperparameter optimization..."
 echo "Study name: $STUDY_NAME"

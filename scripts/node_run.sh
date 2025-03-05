@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --partition=gpu
 #SBATCH --gpus=1
-#SBATCH --job-name=progressive_mask
+#SBATCH --job-name=progressive_mask_optimized
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=18
 #SBATCH --time=48:00:00
-#SBATCH --output=progressive_mask_%A.out
+#SBATCH --output=progressive_mask_optimized_%A.out
 
 # Load required modules
 module purge
@@ -20,23 +20,26 @@ cd ..
 
 # Create a timestamp for unique run identification
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-RUN_ID="progressive_mask_${TIMESTAMP}"
+RUN_ID="progressive_mask_optimized_${TIMESTAMP}"
 
-# Set common parameters
-NUM_GRAPHS=500
+# Set parameters from the JSON input
+NUM_GRAPHS=5000
 SEED=42
-BATCH_SIZE=32
+NUM_LAYERS=4
+NUM_HEADS=16
+HIDDEN_DIM=256
+DROPOUT=0.0
+LEARNING_RATE=0.004
+BATCH_SIZE=128
 EPOCHS=100
-LEARNING_RATE=0.001
-HIDDEN_DIM=64
-NUM_LAYERS=3
-DROPOUT=0.1
+MASK_MODE="node_feature"
 
 # Create master directory for this run
 MASTER_DIR="./results/${RUN_ID}"
 mkdir -p "$MASTER_DIR"
+mkdir -p "${MASTER_DIR}/models"
 
-echo "Starting progressive mask probability training..."
+echo "Starting progressive mask probability training with optimized parameters..."
 echo "Run ID: $RUN_ID"
 echo "Master directory: $MASTER_DIR"
 
@@ -48,8 +51,10 @@ echo "Epochs per mask level: $EPOCHS" >> "${MASTER_DIR}/config.txt"
 echo "Learning rate: $LEARNING_RATE" >> "${MASTER_DIR}/config.txt"
 echo "Hidden dim: $HIDDEN_DIM" >> "${MASTER_DIR}/config.txt"
 echo "Num layers: $NUM_LAYERS" >> "${MASTER_DIR}/config.txt"
+echo "Num heads: $NUM_HEADS" >> "${MASTER_DIR}/config.txt"
 echo "Dropout: $DROPOUT" >> "${MASTER_DIR}/config.txt"
 echo "Seed: $SEED" >> "${MASTER_DIR}/config.txt"
+echo "Mask mode: $MASK_MODE" >> "${MASTER_DIR}/config.txt"
 
 # Array of mask probabilities to try
 MASK_PROBS=(0.2 0.4 0.6 0.8)
@@ -61,7 +66,7 @@ for MASK_PROB in "${MASK_PROBS[@]}"; do
     MASK_PROB_DIR="${MASK_PROB/./}"
 
     # Set run name
-    RUN_NAME="node_mp${MASK_PROB_DIR}"
+    RUN_NAME="${MASK_MODE}_mp${MASK_PROB_DIR}"
     EXP_DIR="${MASTER_DIR}/${RUN_NAME}"
 
     echo "==================================================="
@@ -77,11 +82,13 @@ for MASK_PROB in "${MASK_PROBS[@]}"; do
       --exp_name \"$RUN_NAME\" \
       --num_graphs $NUM_GRAPHS \
       --mask_prob $MASK_PROB \
+      --mask_mode $MASK_MODE \
       --batch_size $BATCH_SIZE \
       --num_epochs $EPOCHS \
       --lr $LEARNING_RATE \
       --hidden_dim $HIDDEN_DIM \
       --num_layers $NUM_LAYERS \
+      --num_heads $NUM_HEADS \
       --dropout $DROPOUT \
       --seed $SEED \
       --results_dir \"$MASTER_DIR/\" \
@@ -114,7 +121,7 @@ echo "All results saved to: $MASTER_DIR"
 echo "Summary of results:" > "${MASTER_DIR}/summary.txt"
 for MASK_PROB in "${MASK_PROBS[@]}"; do
     MASK_PROB_DIR="${MASK_PROB/./}"
-    RUN_NAME="node_mp${MASK_PROB_DIR}"
+    RUN_NAME="${MASK_MODE}_mp${MASK_PROB_DIR}"
     METRICS_FILE="${MASTER_DIR}/${RUN_NAME}/metrics.json"
 
     if [ -f "$METRICS_FILE" ]; then

@@ -2,6 +2,10 @@ import torch
 import torch.nn.functional as F
 
 
+import torch
+import torch.nn.functional as F
+
+
 def compute_loss(predictions, targets):
     """
     Compute loss for the three masking modes:
@@ -20,20 +24,23 @@ def compute_loss(predictions, targets):
     losses = {}
     total_loss = 0.0
 
-    mask_mode = targets.get('mask_mode', 'node_feature')
+    # Get the masking mode from targets
+    mask_mode = targets.get('mask_mode')
+    if mask_mode is None:
+        raise ValueError("Masking mode must be specified in targets")
 
-    # 1. Node feature prediction loss - relevant for all masking modes
-    if 'node_features' in predictions and 'x_target' in targets:
-        if 'node_mask' in targets and targets['node_mask'].sum() > 0:
-            mask = targets['node_mask']
-            pred_nodes = predictions['node_features'][mask]
-            target_nodes = targets['x_target'][mask]
-            node_loss = F.binary_cross_entropy_with_logits(pred_nodes, target_nodes)
-            losses['node_loss'] = node_loss
-            total_loss += node_loss
+    # Only compute node feature prediction loss when in node_feature mode
+    if mask_mode == "node_feature":
+        if 'node_features' in predictions and 'x_target' in targets:
+            if 'node_mask' in targets and targets['node_mask'].sum() > 0:
+                mask = targets['node_mask']
+                pred_nodes = predictions['node_features'][mask]
+                target_nodes = targets['x_target'][mask]
+                node_loss = F.binary_cross_entropy_with_logits(pred_nodes, target_nodes)
+                losses['node_loss'] = node_loss
+                total_loss += node_loss
 
-    # 2. Edge feature prediction loss - for edge_feature and connectivity modes
-    # In the edge_feature prediction loss section
+    # Edge feature prediction loss - for edge_feature and connectivity modes
     if mask_mode in ["edge_feature", "connectivity"]:
         if 'edge_preds' in predictions and 'edge_features' in predictions['edge_preds']:
             if 'edge_mask' in targets and 'edge_attr_target' in targets and targets['edge_mask'].sum() > 0:
@@ -50,7 +57,7 @@ def compute_loss(predictions, targets):
                     if valid_count > 0:
                         try:
                             # Clip predictions to prevent extreme values
-                            clipped_preds = torch.clamp(pred_edges[:valid_count], -10, 10)  # More aggressive clipping
+                            clipped_preds = torch.clamp(pred_edges[:valid_count], -10, 10)
 
                             # Use reduction='none' to check individual loss values
                             edge_feat_loss_values = F.binary_cross_entropy_with_logits(
@@ -76,7 +83,7 @@ def compute_loss(predictions, targets):
                             losses["edge_feature_loss"] = edge_feat_loss
                             total_loss += edge_feat_loss
 
-    # 3. Edge existence loss - only for connectivity mode
+    # Edge existence loss - only for connectivity mode
     if mask_mode == "connectivity":
         if 'edge_preds' in predictions and 'edge_existence' in predictions['edge_preds']:
             # Modern format with all_candidate_pairs

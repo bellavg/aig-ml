@@ -59,7 +59,7 @@ def validate(args, model, val_loader, device):
                                                                              'edge_attr_target') else None,
                 'node_mask': masked_batch.node_mask if hasattr(masked_batch, 'node_mask') else None,
                 'edge_mask': masked_batch.edge_mask if hasattr(masked_batch, 'edge_mask') else None,
-                'mask_mode': masked_batch.mask_mode
+                'mask_mode': mask_mode  # Use the mask_mode from args explicitly
             }
 
             # Add mode-specific information to targets

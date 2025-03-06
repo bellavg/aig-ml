@@ -52,9 +52,8 @@ def train_epoch(args, model, train_loader, optimizer, device):
                 'edge_index_target': masked_batch.edge_index_target,
                 'edge_attr_target': masked_batch.edge_attr_target if hasattr(masked_batch,
                                                                              'edge_attr_target') else None,
-                'mask_mode': masked_batch.mask_mode
+                'mask_mode': mask_mode  # Explicitly use the mask_mode from args, not from the batch
             }
-
             # Add masks if they exist
             if hasattr(masked_batch, 'node_mask'):
                 targets['node_mask'] = masked_batch.node_mask

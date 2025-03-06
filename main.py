@@ -46,7 +46,7 @@ def parse_args():
                         help="Ratio of dataset used for validation")
     parser.add_argument('--test_ratio', type=float, default=0.1,
                         help="Ratio of dataset used for testing")
-    parser.add_argument('--val_freq', type=int, default=5,
+    parser.add_argument('--val_freq', type=int, default=2,
                         help="Frequency (in epochs) to run validation")
 
     parser.add_argument('--device', type=str, default='cuda',
@@ -241,9 +241,6 @@ def main():
     # Move model to device
     model = model.to(device)
 
-    # Set up optimizer
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
-
     # Track metrics
     best_val_loss = float('inf')
     no_improve_count = 0
@@ -261,9 +258,23 @@ def main():
     # Initialize best_model_loaded to help track if the best model was successfully saved
     best_model_loaded = False
 
+    # Set up optimizer
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
+
+    # Add learning rate scheduler
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode='min',  # 'min' since we're tracking loss
+        factor=0.5,  # multiply lr by this factor on plateau
+        patience=5,  # number of epochs with no improvement
+        verbose=True,  # print message when lr is reduced
+        min_lr=1e-6,  # lower bound on the learning rate
+        threshold=0.0001,  # minimum change to qualify as improvement
+        threshold_mode='rel'  # use relative change
+    )
+
     # Training loop
     for epoch in range(args.num_epochs):
-
         # Train for one epoch
         train_losses = train_epoch(args, model, train_loader, optimizer, device)
 
@@ -276,6 +287,18 @@ def main():
             val_losses, val_metrics = validate(args, model, val_loader, device)
             epoch_log += f", Val: {dict(val_losses)}"
             epoch_log += f", Metrics: {val_metrics}"
+
+            # Get validation loss for scheduler
+            current_val_loss = val_losses.get('total_loss', val_losses.get('node_loss',
+                                                                           val_losses.get('edge_feature_loss',
+                                                                                          float('inf'))))
+
+            # Update learning rate based on validation performance
+            scheduler.step(current_val_loss)
+
+            # Log current learning rate
+            current_lr = optimizer.param_groups[0]['lr']
+            epoch_log += f", LR: {current_lr:.6f}"
 
             # Track metrics
             training_metrics["val_losses"].append(dict(val_losses))

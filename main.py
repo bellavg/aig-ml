@@ -82,7 +82,7 @@ def parse_args():
                         help="Batch size for training")
     parser.add_argument('--lr', type=float, default=0.001,
                         help="Learning rate")
-    parser.add_argument('--early_stopping', type=int, default=3,
+    parser.add_argument('--early_stopping', type=int, default=10,
                         help="Number of epochs to wait for improvement before early stopping")
     parser.add_argument('--seed', type=int, default=42,
                         help="Random seed for reproducibility")
@@ -289,9 +289,7 @@ def main():
             epoch_log += f", Metrics: {val_metrics}"
 
             # Get validation loss for scheduler
-            current_val_loss = val_losses.get('total_loss', val_losses.get('node_loss',
-                                                                           val_losses.get('edge_feature_loss',
-                                                                                          float('inf'))))
+            current_val_loss = val_losses.get('total_loss')
 
             # Update learning rate based on validation performance
             scheduler.step(current_val_loss)

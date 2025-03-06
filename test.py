@@ -45,10 +45,6 @@ def validate(args, model, val_loader, device):
                 mp=args.mask_prob,
                 mask_mode=mask_mode
             )
-
-            # Forward pass
-            predictions = model(masked_batch)
-
             # Forward pass
             predictions = model(masked_batch)
             # Prepare base target dictionary with common information
@@ -118,14 +114,34 @@ def validate(args, model, val_loader, device):
                     metrics['edge_existence_accuracy'] += existence_acc.item()
 
                 # Edge feature accuracy (only for existing edges)
+                # Edge feature accuracy (only for existing edges)
                 if 'edge_feature_preds' in full_predictions and 'masked_edge_attr_target' in targets:
                     pred_features = torch.sigmoid(full_predictions['edge_feature_preds'])
-                    pred_labels = (pred_features > 0.5).float()
 
-                    # This is a bit tricky - we only care about feature accuracy for edges that exist
-                    # For simplicity, we'll calculate on all masked edges
-                    feature_acc = (pred_labels == targets['masked_edge_attr_target']).float().mean()
-                    metrics['edge_feature_accuracy'] += feature_acc.item()
+                    # Only evaluate feature accuracy for positive examples (actual edges)
+                    if 'all_candidate_targets' in targets:
+                        # Get only positive examples (real edges that should exist)
+                        positive_mask = targets['all_candidate_targets'].squeeze(-1) > 0.5
+
+                        # Get feature predictions only for positive examples
+                        positive_pred_features = pred_features[positive_mask]
+
+                        # Apply threshold to get binary predictions
+                        positive_pred_labels = (positive_pred_features > 0.5).float()
+
+                        # Use only the first N predictions matching the target size
+                        valid_count = min(positive_pred_labels.size(0), targets['masked_edge_attr_target'].size(0))
+
+                        if valid_count > 0:
+                            feature_acc = (positive_pred_labels[:valid_count] ==
+                                           targets['masked_edge_attr_target'][:valid_count]).float().mean()
+                            metrics['edge_feature_accuracy'] += feature_acc.item()
+                    else:
+                        # Fallback to original behavior
+                        pred_labels = (pred_features > 0.5).float()
+                        if pred_labels.size(0) == targets['masked_edge_attr_target'].size(0):
+                            feature_acc = (pred_labels == targets['masked_edge_attr_target']).float().mean()
+                            metrics['edge_feature_accuracy'] += feature_acc.item()
 
     # Average losses and metrics
     for key in val_losses:

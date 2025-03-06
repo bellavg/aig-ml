@@ -158,20 +158,13 @@ class HPOObjective:
             # Train for one epoch
             train_losses = train_epoch(epoch_args, model, self.train_loader, optimizer, self.device)
 
-            if args.mask_mode == "edge_feature":
-                current_train_loss = train_losses.get('edge_feature_loss', float('inf'))
-            else:
-                current_train_loss = train_losses.get('total_loss', train_losses.get('node_loss', float('inf')))
+
+            current_train_loss = train_losses.get('total_loss', float('inf'))
 
             # Validate
             val_losses, val_metrics = validate(epoch_args, model, self.val_loader, self.device)
 
-            # Get validation loss - use edge_feature_loss for your edge_feature mode
-            if args.mask_mode == "edge_feature":
-                current_val_loss = val_losses.get('edge_feature_loss', float('inf'))
-            else:
-                current_val_loss = val_losses.get('total_loss', val_losses.get('node_loss', float('inf')))
-
+            current_val_loss = val_losses.get('total_loss', float('inf'))
             # Report to Optuna for pruning
             trial.report(current_val_loss, epoch)
             if trial.should_prune():
@@ -197,12 +190,16 @@ class HPOObjective:
         # Evaluate on test set
         test_losses, test_metrics = validate(epoch_args, model, self.test_loader, self.device)
 
+        # Get validation loss - use appropriate loss based on masking mode
         if args.mask_mode == "edge_feature":
-            current_test_loss = test_losses.get('edge_feature_loss', float('inf'))
+            current_test_loss = val_losses.get('edge_feature_loss', float('inf'))
+        elif args.mask_mode == "connectivity":
+            # For connectivity, prioritize edge existence loss
+            current_test_loss = val_losses.get('edge_existence_loss',
+                                              val_losses.get('total_loss', float('inf')))
         else:
-            current_test_loss = test_losses.get('total_loss', test_losses.get('node_loss', float('inf')))
-
-
+            current_test_loss = val_losses.get('total_loss',
+                                              val_losses.get('node_loss', float('inf')))
         # Save trial results
         trial_info = {
             'trial_number': trial.number,

@@ -199,29 +199,60 @@ class AIGTransformer(nn.Module):
                     'edge_features': edge_features
                 }
 
-    def _handle_connectivity(self, data, x, results):
-        """Handle modern connectivity format with all_candidate_pairs."""
-        all_candidate_pairs = data.all_candidate_pairs
+    def _handle_connectivity(self, data, x, edge_mask, results):
+        """
+        Handle connectivity prediction mode with candidate pairs.
 
-        # Get node embeddings for source and target nodes of all candidates
-        src_embeddings = x[all_candidate_pairs[0]]
-        dst_embeddings = x[all_candidate_pairs[1]]
+        Args:
+            data: PyG data object containing the masked graph
+            x: Node embeddings
+            edge_mask: Boolean mask indicating which edges are masked
+            results: Dictionary to store predictions
+        """
+        if hasattr(data, 'all_candidate_pairs'):
+            all_candidate_pairs = data.all_candidate_pairs
 
-        # Concatenate embeddings
-        edge_embeddings = torch.cat([src_embeddings, dst_embeddings], dim=1)
+            # Get node embeddings for source and target nodes of all candidates
+            src_embeddings = x[all_candidate_pairs[0]]
+            dst_embeddings = x[all_candidate_pairs[1]]
 
-        # Predict edge existence
-        edge_existence = self.edge_existence_predictor(edge_embeddings)
+            # Concatenate embeddings
+            edge_embeddings = torch.cat([src_embeddings, dst_embeddings], dim=1)
 
-        # Predict edge features using the improved predictor
-        edge_features = self._predict_edge_features(src_embeddings, dst_embeddings)
+            # Predict edge existence
+            edge_existence = self.edge_existence_predictor(edge_embeddings)
 
-        # Store edge predictions
-        results['edge_preds'] = {
-            'all_candidate_pairs': all_candidate_pairs,
-            'edge_existence': edge_existence,
-            'edge_features': edge_features
-        }
+            # Predict edge features using the improved predictor
+            edge_features = self._predict_edge_features(src_embeddings, dst_embeddings)
+
+            # Store edge predictions
+            results['edge_preds'] = {
+                'all_candidate_pairs': all_candidate_pairs,
+                'edge_existence': edge_existence,
+                'edge_features': edge_features
+            }
+        else:
+            # Fallback for when all_candidate_pairs is not available
+            # This might happen during testing or in older data formats
+            if hasattr(data, 'masked_edge_node_pairs') and hasattr(data, 'connectivity_target'):
+                masked_pairs = data.masked_edge_node_pairs
+
+                # Get node embeddings for masked pairs
+                src_embeddings = x[masked_pairs[0]]
+                dst_embeddings = x[masked_pairs[1]]
+
+                # Predict edge existence and features
+                edge_existence = self.edge_existence_predictor(
+                    torch.cat([src_embeddings, dst_embeddings], dim=1))
+                edge_features = self._predict_edge_features(src_embeddings, dst_embeddings)
+
+                # Store predictions
+                results['edge_preds'] = {
+                    'masked_edges': masked_pairs,
+                    'edge_existence': edge_existence,
+                    'edge_features': edge_features
+                }
+
 
     def _apply_global_context(self, x, batch):
         """

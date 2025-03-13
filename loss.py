@@ -35,7 +35,8 @@ def compute_loss(predictions, targets):
 
 def compute_node_feature_loss(predictions, targets):
     """
-    Compute loss for node feature prediction (masking node features).
+    Compute loss for node feature prediction, focusing only on the truth table value
+    at index 3 for masked AND gates.
 
     Args:
         predictions: Dictionary of model predictions.
@@ -43,19 +44,37 @@ def compute_node_feature_loss(predictions, targets):
 
     Returns:
         total_loss: Scalar loss value.
-        losses: Dictionary with 'node_loss' and 'total_loss'.
+        losses: Dictionary with 'truth_table_loss' and 'total_loss'.
     """
     losses = {}
     total_loss = 0.0
 
     if "node_features" in predictions and "x_target" in targets:
         if "node_mask" in targets and targets["node_mask"].sum() > 0:
+            # Get the masked nodes
             mask = targets["node_mask"]
+
+            # Get predicted and target node features for masked nodes
             pred_nodes = predictions["node_features"][mask]
             target_nodes = targets["x_target"][mask]
-            node_loss = F.binary_cross_entropy_with_logits(pred_nodes, target_nodes)
-            losses["node_loss"] = node_loss
-            total_loss += node_loss
+
+            # Get the truth table index (should be at position 3)
+            # If truth_table_idx is stored in targets, use it; otherwise default to 3
+            tt_idx = getattr(targets, "truth_table_idx", 3)
+
+            # Extract only the truth table values
+            pred_tt = pred_nodes[:, tt_idx]
+            target_tt = target_nodes[:, tt_idx]
+
+            # Compute loss only on truth table values
+            # Reshape to ensure correct dimensions for BCE loss
+            tt_loss = F.binary_cross_entropy_with_logits(
+                pred_tt.view(-1),
+                target_tt.view(-1)
+            )
+
+            losses["truth_table_loss"] = tt_loss
+            total_loss += tt_loss
 
     return finalize_loss(total_loss, losses, predictions)
 

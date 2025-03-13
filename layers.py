@@ -137,6 +137,7 @@ class DAGTransformerLayer(nn.Module):
                 attn_scores[:, :, h] += q_contrib + k_contrib
 
             # Add edge-based attention if available - KEEP YOUR EXISTING CODE HERE
+            # Modify the edge-based attention section in the forward method
             if edge_attr is not None and edge_index.size(1) > 0:
                 # Find edges within this subgraph
                 src_idx, dst_idx = edge_index
@@ -176,55 +177,57 @@ class DAGTransformerLayer(nn.Module):
                         # Ensure edge_type is within bounds
                         edge_type = min(edge_type, query_edge_emb.weight.size(0) - 1)
 
-                        # Add query-edge interaction
-                        q_edge = torch.matmul(
-                            graph_q[src_local],
-                            query_edge_emb.weight[edge_type].view(self.nhead, self.head_dim).transpose(0, 1)
-                        )
+                        # Add query-edge and key-edge interactions for each head
+                        for h in range(self.nhead):
+                            # Add query-edge interaction
+                            q_edge = torch.matmul(
+                                graph_q[src_local, h],
+                                query_edge_emb.weight[edge_type].view(self.nhead, self.head_dim)[h]
+                            )
 
-                        # Add key-edge interaction
-                        k_edge = torch.matmul(
-                            graph_k[dst_local],
-                            key_edge_emb.weight[edge_type].view(self.nhead, self.head_dim).transpose(0, 1)
-                        )
+                            # Add key-edge interaction
+                            k_edge = torch.matmul(
+                                graph_k[dst_local, h],
+                                key_edge_emb.weight[edge_type].view(self.nhead, self.head_dim)[h]
+                            )
 
-                        # Add to attention scores
-                        attn_scores[src_local, dst_local] += q_edge + k_edge
+                            # Add to attention scores (now uses scalar addition)
+                            attn_scores[src_local, dst_local, h] += q_edge + k_edge
 
-                    # Apply softmax per head (vectorized)
-                attn_probs = F.softmax(attn_scores, dim=1)
+                # Apply softmax per head (vectorized)
+            attn_probs = F.softmax(attn_scores, dim=1)
 
-                # Apply dropout to attention probabilities
-                attn_probs = self.dropout(attn_probs)
+            # Apply dropout to attention probabilities
+            attn_probs = self.dropout(attn_probs)
 
-                # Apply attention to values (vectorized per head)
-                graph_out = torch.zeros(len(graph_nodes), self.d_model, device=x.device)
+            # Apply attention to values (vectorized per head)
+            graph_out = torch.zeros(len(graph_nodes), self.d_model, device=x.device)
 
-                for h in range(self.nhead):
-                    # Basic attention: weighted sum of values (vectorized)
-                    head_out = torch.matmul(attn_probs[:, :, h], graph_v[:, h])  # [num_nodes, head_dim]
+            for h in range(self.nhead):
+                # Basic attention: weighted sum of values (vectorized)
+                head_out = torch.matmul(attn_probs[:, :, h], graph_v[:, h])  # [num_nodes, head_dim]
 
-                    # Store in correct slice of output
-                    graph_out[:, h * self.head_dim:(h + 1) * self.head_dim] = head_out
+                # Store in correct slice of output
+                graph_out[:, h * self.head_dim:(h + 1) * self.head_dim] = head_out
 
-                    # Add value position encodings - vectorized version for hop-based value encoding
-                    # Reshape for broadcasting with value_hop_emb weights
-                    v_hop_weights = value_hop_emb.weight[hop_distances[:, :, 0]]  # [num_nodes, num_nodes, d_model]
-                    v_hop_weights = v_hop_weights.view(num_graph_nodes, num_graph_nodes, self.nhead, self.head_dim)
+                # Add value position encodings - vectorized version for hop-based value encoding
+                # Reshape for broadcasting with value_hop_emb weights
+                v_hop_weights = value_hop_emb.weight[hop_distances[:, :, 0]]  # [num_nodes, num_nodes, d_model]
+                v_hop_weights = v_hop_weights.view(num_graph_nodes, num_graph_nodes, self.nhead, self.head_dim)
 
-                    # Weight by attention probability and sum
-                    weighted_v_hop = v_hop_weights[:, :, h, :] * attn_probs[:, :, h].unsqueeze(
-                        -1)  # [num_nodes, num_nodes, head_dim]
-                    v_hop_contrib = weighted_v_hop.sum(dim=1)  # Sum over source nodes, [num_nodes, head_dim]
+                # Weight by attention probability and sum
+                weighted_v_hop = v_hop_weights[:, :, h, :] * attn_probs[:, :, h].unsqueeze(
+                    -1)  # [num_nodes, num_nodes, head_dim]
+                v_hop_contrib = weighted_v_hop.sum(dim=1)  # Sum over source nodes, [num_nodes, head_dim]
 
-                    # Add to the output
-                    graph_out[:, h * self.head_dim:(h + 1) * self.head_dim] += v_hop_contrib
+                # Add to the output
+                graph_out[:, h * self.head_dim:(h + 1) * self.head_dim] += v_hop_contrib
 
-                # Apply output projection
-                graph_out = self.out_proj(graph_out)
+            # Apply output projection
+            graph_out = self.out_proj(graph_out)
 
-                # Store in output tensor
-                out[graph_nodes] = graph_out
+            # Store in output tensor
+            out[graph_nodes] = graph_out
 
             # Apply first residual connection
         x = x + self.dropout(out)
@@ -314,6 +317,8 @@ class GraphConvLayer(nn.Module):
         self.W = nn.Linear(in_dim, out_dim)
         self.W_edge = nn.Linear(in_dim, out_dim)
 
+        self.out_dim = out_dim
+
         # Initialize weights with Glorot/Xavier initialization
         nn.init.xavier_uniform_(self.W.weight)
         nn.init.xavier_uniform_(self.W_edge.weight)
@@ -324,7 +329,7 @@ class GraphConvLayer(nn.Module):
         """Forward pass with efficient scatter operations."""
         # Early return if no edges
         if edge_index.size(1) == 0:
-            return torch.zeros_like(x)
+            return torch.zeros(x.size(0), self.out_dim, device=x.device)  # Return [num_nodes, out_dim]
 
         # Transform node features
         h = self.W(x)

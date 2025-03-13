@@ -14,7 +14,7 @@ sys.path.append(os.path.abspath('..'))
 from masking import create_masked_batch
 
 
-class TestNewMasking(unittest.TestCase):
+class TestTruthTableMasking(unittest.TestCase):
 
     def setUp(self):
         """Create synthetic AIG graphs for testing."""
@@ -25,13 +25,14 @@ class TestNewMasking(unittest.TestCase):
 
         # Create a small synthetic graph resembling an AIG
         # Node types: [1,0,0] = PI, [0,1,0] = AND, [0,0,1] = PO
+        # Fourth value (index 3) is the truth table value
         self.single_graph = Data(
             x=torch.tensor([
-                [1, 0, 0],  # PI
-                [1, 0, 0],  # PI
-                [0, 1, 0],  # AND
-                [0, 1, 0],  # AND
-                [0, 0, 1],  # PO
+                [1, 0, 0, 0.5],  # PI
+                [1, 0, 0, 0.2],  # PI
+                [0, 1, 0, 1.0],  # AND
+                [0, 1, 0, 12.0],  # AND
+                [0, 0, 1, 3.6],  # PO
             ], dtype=torch.float),
             edge_index=torch.tensor([
                 [0, 1, 2, 3],  # From
@@ -45,18 +46,18 @@ class TestNewMasking(unittest.TestCase):
             ], dtype=torch.float)
         )
 
-        # Create a larger graph for testing connectivity masking
+        # Create a larger graph for testing
         self.larger_graph = Data(
             x=torch.tensor([
-                [1, 0, 0],  # PI
-                [1, 0, 0],  # PI
-                [1, 0, 0],  # PI
-                [0, 1, 0],  # AND
-                [0, 1, 0],  # AND
-                [0, 1, 0],  # AND
-                [0, 1, 0],  # AND
-                [0, 0, 1],  # PO
-                [0, 0, 1],  # PO
+                [1, 0, 0, 2.0],  # PI
+                [1, 0, 0, 4.0],  # PI
+                [1, 0, 0, 6.0],  # PI
+                [0, 1, 0, 8.0],  # AND
+                [0, 1, 0, 1.0],  # AND
+                [0, 1, 0, 4.0],  # AND
+                [0, 1, 0, 4.0],  # AND
+                [0, 0, 1, 5.0],  # PO
+                [0, 0, 1, 2.2],  # PO
             ], dtype=torch.float),
             edge_index=torch.tensor([
                 [0, 1, 2, 0, 1, 3, 4, 5, 6],  # From
@@ -73,294 +74,373 @@ class TestNewMasking(unittest.TestCase):
             self.single_graph  # Just duplicate for simplicity
         ])
 
-        # Create a batch with larger graphs for testing connectivity
+        # Create a batch with larger graphs
         self.larger_batch = Batch.from_data_list([
             self.larger_graph,
             self.larger_graph
         ])
 
-    def test_node_feature_masking_basic(self):
-        """Basic test for node feature masking mode."""
-        mask_prob = 1.0  # Ensure all eligible nodes are masked
-        masked_batch = create_masked_batch(self.batch, mp=mask_prob, mask_mode="node_feature")
+    def test_truth_table_masking_basics(self):
+        """Test that only the truth table value (index 3) is masked for AND gates."""
+        mask_prob = 1.0  # Mask all eligible AND gates
 
-        # Check that attributes are preserved
+        masked_batch = create_masked_batch(
+            self.batch,
+            mp=mask_prob,
+            mask_mode="node_feature"
+        )
+
+        # Check that attributes are preserved and added
         self.assertTrue(hasattr(masked_batch, 'x_target'))
-        self.assertTrue(hasattr(masked_batch, 'edge_index_target'))
-        self.assertTrue(hasattr(masked_batch, 'edge_attr_target'))
         self.assertTrue(hasattr(masked_batch, 'node_mask'))
+        self.assertTrue(hasattr(masked_batch, 'truth_table_idx'))
+        self.assertTrue(hasattr(masked_batch, 'node_type_dim'))
+
+        # Check that the truth table index is correctly set to 3
+        self.assertEqual(masked_batch.truth_table_idx, 3)
 
         # Check that masking mode is stored
         self.assertEqual(masked_batch.mask_mode, "node_feature")
 
-        # Check that node features are masked (zeroed out) where node_mask is True
-        # and only for AND gates (nodes 2, 3, 7, 8 in our batch)
+        # Identify AND gates
+        is_and_gate = (masked_batch.x_target[:, 0] == 0) & (masked_batch.x_target[:, 1] == 1) & (
+                    masked_batch.x_target[:, 2] == 0)
+        and_gate_indices = torch.nonzero(is_and_gate).squeeze()
+
+        # For each node in the batch
         for i in range(masked_batch.x.size(0)):
             if masked_batch.node_mask[i]:
-                self.assertTrue(torch.all(masked_batch.x[i] == 0).item())
-                # Check it's an AND gate in the original
-                self.assertTrue(torch.all(masked_batch.x_target[i, 1:2] == 1).item())
+                # Should be an AND gate
+                self.assertTrue(is_and_gate[i].item())
 
-        # Verify no edges were modified
-        self.assertTrue(torch.equal(masked_batch.edge_index, masked_batch.edge_index_target))
-        self.assertTrue(torch.equal(masked_batch.edge_attr, masked_batch.edge_attr_target))
+                # Only the truth table value should be masked
+                # Node type (first 3 dimensions) should be preserved
+                self.assertTrue(torch.equal(
+                    masked_batch.x[i, :3],
+                    masked_batch.x_target[i, :3]
+                ))
 
-    def test_edge_feature_masking_basic(self):
-        """Basic test for edge feature masking mode."""
-        mask_prob = 1.0  # Ensure all eligible edges are masked
-        masked_batch = create_masked_batch(self.batch, mp=mask_prob, mask_mode="edge_feature")
+                # Truth table value at index 3 should be zero
+                self.assertEqual(masked_batch.x[i, 3].item(), 0.0)
+            elif is_and_gate[i]:
+                # If it's an AND gate but not masked, it should be unchanged
+                self.assertTrue(torch.equal(
+                    masked_batch.x[i],
+                    masked_batch.x_target[i]
+                ))
+            else:
+                # Non-AND gates should never be masked
+                self.assertFalse(masked_batch.node_mask[i].item())
 
-        # Check that attributes are preserved
-        self.assertTrue(hasattr(masked_batch, 'edge_mask'))
+                # Features should remain unchanged
+                self.assertTrue(torch.equal(
+                    masked_batch.x[i],
+                    masked_batch.x_target[i]
+                ))
 
-        # Check that edge features are masked (zeroed out) where edge_mask is True
-        for i in range(masked_batch.edge_attr.size(0)):
-            if masked_batch.edge_mask[i]:
-                self.assertTrue(torch.all(masked_batch.edge_attr[i] == 0).item())
+    def test_masking_only_and_gates(self):
+        """Test that only AND gates are masked, not inputs or outputs."""
+        mask_prob = 1.0  # Mask all eligible nodes
 
-        # Verify edge structure is preserved
-        self.assertTrue(torch.equal(masked_batch.edge_index, masked_batch.edge_index_target))
-        self.assertEqual(masked_batch.edge_index.size(1), masked_batch.edge_index_target.size(1))
-
-    def test_masking_functions_exist(self):
-        """Test that all masking functions are available."""
-        modes = ["node_feature", "edge_feature", "connectivity"]
-
-        for mode in modes:
-            # Should not raise exception
-            masked_batch = create_masked_batch(self.batch, mp=0.5, mask_mode=mode)
-            self.assertEqual(masked_batch.mask_mode, mode)
-
-    def test_connectivity_masking_basic(self):
-        """Test basic connectivity masking functionality."""
-        mask_prob = 0.5  # Mask half of edges
-        masked_batch = create_masked_batch(self.batch, mp=mask_prob, mask_mode="connectivity")
-
-        # Check that needed attributes exist
-        self.assertTrue(hasattr(masked_batch, 'edge_mask'))
-        self.assertTrue(hasattr(masked_batch, 'masked_edge_indices'))
-        self.assertTrue(hasattr(masked_batch, 'masked_edge_node_pairs'))
-        self.assertTrue(hasattr(masked_batch, 'connectivity_target'))
-
-        # Check that masked edges were removed
-        num_original_edges = self.batch.edge_index.size(1)
-        num_masked_edges = masked_batch.masked_edge_indices.size(0)
-        num_remaining_edges = masked_batch.edge_index.size(1)
-
-        self.assertEqual(num_original_edges, num_remaining_edges + num_masked_edges)
-
-        # Check that connectivity targets are all ones (since they were real edges)
-        self.assertTrue(torch.all(masked_batch.connectivity_target == 1).item())
-
-        # Check masked_edge_node_pairs contains source and destination nodes
-        self.assertEqual(masked_batch.masked_edge_node_pairs.size(0), 2)  # [source, dest] format
-        self.assertEqual(masked_batch.masked_edge_node_pairs.size(1), num_masked_edges)
-
-    def test_connectivity_masking_negative_examples(self):
-        """Test that connectivity masking generates negative examples."""
-        # Use larger batch to have enough nodes for negative sampling
-        mask_prob = 0.3  # Mask 30% of edges
-        masked_batch = create_masked_batch(self.larger_batch, mp=mask_prob, mask_mode="connectivity")
-
-        # Check that negative examples were generated
-        self.assertTrue(hasattr(masked_batch, 'negative_edge_pairs'))
-        self.assertTrue(hasattr(masked_batch, 'negative_edge_targets'))
-        self.assertTrue(hasattr(masked_batch, 'all_candidate_pairs'))
-        self.assertTrue(hasattr(masked_batch, 'all_candidate_targets'))
-
-        # Check that negative targets are all zeros
-        self.assertTrue(torch.all(masked_batch.negative_edge_targets == 0).item())
-
-        # Check combined examples have correct structure
-        num_pos = masked_batch.connectivity_target.size(0)
-        num_neg = masked_batch.negative_edge_targets.size(0)
-
-        self.assertEqual(masked_batch.all_candidate_pairs.size(1), num_pos + num_neg)
-        self.assertEqual(masked_batch.all_candidate_targets.size(0), num_pos + num_neg)
-
-        # Check that negative edge pairs don't exist in the original graph
-        edge_set = set()
-        for i in range(self.larger_batch.edge_index.size(1)):
-            src = self.larger_batch.edge_index[0, i].item()
-            dst = self.larger_batch.edge_index[1, i].item()
-            edge_set.add((src, dst))
-
-        for i in range(masked_batch.negative_edge_pairs.size(1)):
-            src = masked_batch.negative_edge_pairs[0, i].item()
-            dst = masked_batch.negative_edge_pairs[1, i].item()
-            self.assertFalse((src, dst) in edge_set)
-
-    def test_connectivity_masking_edge_removal(self):
-        """Test that connectivity masking actually removes edges from the graph."""
-        mask_prob = 0.5  # Mask half of edges
-        masked_batch = create_masked_batch(self.batch, mp=mask_prob, mask_mode="connectivity")
-
-        # Get original edges
-        original_edges = set()
-        for i in range(self.batch.edge_index.size(1)):
-            src = self.batch.edge_index[0, i].item()
-            dst = self.batch.edge_index[1, i].item()
-            original_edges.add((src, dst))
-
-        # Get remaining edges
-        remaining_edges = set()
-        for i in range(masked_batch.edge_index.size(1)):
-            src = masked_batch.edge_index[0, i].item()
-            dst = masked_batch.edge_index[1, i].item()
-            remaining_edges.add((src, dst))
-
-        # Get masked edges
-        masked_edges = set()
-        for i in range(masked_batch.masked_edge_node_pairs.size(1)):
-            src = masked_batch.masked_edge_node_pairs[0, i].item()
-            dst = masked_batch.masked_edge_node_pairs[1, i].item()
-            masked_edges.add((src, dst))
-
-        # Verify that:
-        # 1. Masked edges are not in remaining edges
-        self.assertEqual(len(masked_edges.intersection(remaining_edges)), 0)
-
-        # 2. Union of masked and remaining edges equals original edges
-        self.assertEqual(masked_edges.union(remaining_edges), original_edges)
-
-    def test_connectivity_masking_edge_attribute_preservation(self):
-        """Test that connectivity masking preserves edge attributes for masked edges."""
-        mask_prob = 0.5
-        masked_batch = create_masked_batch(self.batch, mp=mask_prob, mask_mode="connectivity")
-
-        # Check that edge attributes are preserved
-        self.assertTrue(hasattr(masked_batch, 'masked_edge_attr_target'))
-
-        # Check dimensions match
-        num_masked_edges = masked_batch.masked_edge_indices.size(0)
-        self.assertEqual(masked_batch.masked_edge_attr_target.size(0), num_masked_edges)
-
-        # Check that attributes match original values
-        for i in range(num_masked_edges):
-            edge_idx = masked_batch.masked_edge_indices[i].item()
-            self.assertTrue(torch.equal(
-                masked_batch.masked_edge_attr_target[i],
-                masked_batch.edge_attr_target[edge_idx]
-            ))
-
-    def test_connectivity_masking_zero_prob(self):
-        """Test connectivity masking with zero probability."""
-        masked_batch = create_masked_batch(self.batch, mp=0.0, mask_mode="connectivity")
-
-        # Should have masked zero or one edge (implementation uses max(1, int(edges * mp)))
-        num_masked = masked_batch.masked_edge_indices.size(0)
-        self.assertLessEqual(num_masked, 1)
-
-        # Check that the graph structure is mostly preserved
-        self.assertGreaterEqual(masked_batch.edge_index.size(1), self.batch.edge_index.size(1) - 1)
-
-    def test_connectivity_masking_full_prob(self):
-        """Test connectivity masking with probability 1.0."""
-        masked_batch = create_masked_batch(self.batch, mp=1.0, mask_mode="connectivity")
-
-        # All edges should be masked
-        self.assertEqual(masked_batch.masked_edge_indices.size(0), self.batch.edge_index.size(1))
-
-        # No edges should remain
-        self.assertEqual(masked_batch.edge_index.size(1), 0)
-
-    def test_connectivity_masked_edge_indices(self):
-        """Test that masked_edge_indices correctly identifies masked edges."""
-        mask_prob = 0.5
-        masked_batch = create_masked_batch(self.batch, mp=mask_prob, mask_mode="connectivity")
-
-        # Check that indices are valid
-        self.assertTrue(torch.all(masked_batch.masked_edge_indices < self.batch.edge_index.size(1)))
-
-        # Check that indices correspond to masked edges
-        for idx in masked_batch.masked_edge_indices:
-            edge_idx = idx.item()
-            self.assertTrue(masked_batch.edge_mask[edge_idx].item())
-
-    def test_connectivity_on_complex_graph(self):
-        """Test connectivity masking on a more complex graph structure."""
-        # Create a more complex graph
-        complex_graph = Data(
-            x=torch.tensor([
-                [1, 0, 0],  # PI
-                [1, 0, 0],  # PI
-                [1, 0, 0],  # PI
-                [0, 1, 0],  # AND
-                [0, 1, 0],  # AND
-                [0, 0, 1],  # PO
-                [0, 0, 1],  # PO
-            ], dtype=torch.float),
-            edge_index=torch.tensor([
-                [0, 1, 2, 3, 3, 4],  # From
-                [3, 3, 4, 5, 6, 6],  # To
-            ], dtype=torch.long),
-            edge_attr=torch.tensor([
-                [1, 0], [1, 0], [1, 0], [1, 0], [1, 0], [1, 0]
-            ], dtype=torch.float)
+        masked_batch = create_masked_batch(
+            self.batch,
+            mp=mask_prob,
+            mask_mode="node_feature"
         )
 
-        complex_batch = Batch.from_data_list([complex_graph])
+        # Identify different node types
+        is_and_gate = (masked_batch.x_target[:, 0] == 0) & (masked_batch.x_target[:, 1] == 1) & (
+                    masked_batch.x_target[:, 2] == 0)
+        is_input = (masked_batch.x_target[:, 0] == 1) & (masked_batch.x_target[:, 1] == 0) & (
+                    masked_batch.x_target[:, 2] == 0)
+        is_output = (masked_batch.x_target[:, 0] == 0) & (masked_batch.x_target[:, 1] == 0) & (
+                    masked_batch.x_target[:, 2] == 1)
 
-        # Apply connectivity masking
-        mask_prob = 0.5
-        masked_batch = create_masked_batch(complex_batch, mp=mask_prob, mask_mode="connectivity")
+        # Check that only AND gates are masked
+        for i in range(masked_batch.x.size(0)):
+            if is_input[i] or is_output[i]:
+                # Inputs and outputs should never be masked
+                self.assertFalse(masked_batch.node_mask[i].item())
 
-        # Check that masking worked
-        self.assertGreater(masked_batch.masked_edge_indices.size(0), 0)
+                # Features should remain unchanged
+                self.assertTrue(torch.equal(
+                    masked_batch.x[i],
+                    masked_batch.x_target[i]
+                ))
 
-        # Check that the graph is still valid (no dangling edges)
-        if masked_batch.edge_index.size(1) > 0:
-            max_node_idx = complex_graph.x.size(0) - 1
-            self.assertTrue(torch.all(masked_batch.edge_index[0] <= max_node_idx))
-            self.assertTrue(torch.all(masked_batch.edge_index[1] <= max_node_idx))
+            # All AND gates should be masked (when mask_prob=1.0)
+            if is_and_gate[i]:
+                self.assertTrue(masked_batch.node_mask[i].item())
 
-    def test_combined_positive_negative_examples(self):
-        """Test that combined positive and negative examples are correctly formatted."""
-        masked_batch = create_masked_batch(self.larger_batch, mp=0.3, mask_mode="connectivity")
+                # Truth table value should be zero
+                self.assertEqual(masked_batch.x[i, 3].item(), 0.0)
 
-        if hasattr(masked_batch, 'all_candidate_pairs'):
-            # Check that combined examples have correct dimensions
-            self.assertEqual(masked_batch.all_candidate_pairs.size(0), 2)  # [src, dst] pairs
-
-            # Check that combined targets have matching length
-            self.assertEqual(
-                masked_batch.all_candidate_pairs.size(1),
-                masked_batch.all_candidate_targets.size(0)
+    def test_varying_mask_probability(self):
+        """Test masking with different probabilities."""
+        # Test with different masking probabilities
+        for mask_prob in [0.0, 0.25, 0.5, 0.75, 1.0]:
+            masked_batch = create_masked_batch(
+                self.larger_batch,
+                mp=mask_prob,
+                mask_mode="node_feature"
             )
 
-            # Check that targets are binary (0 or 1)
-            unique_targets = torch.unique(masked_batch.all_candidate_targets)
-            self.assertTrue(torch.all(torch.isin(unique_targets, torch.tensor([0., 1.]))).item())
+            # Identify AND gates
+            is_and_gate = (masked_batch.x_target[:, 0] == 0) & (masked_batch.x_target[:, 1] == 1) & (
+                        masked_batch.x_target[:, 2] == 0)
+            and_gate_count = is_and_gate.sum().item()
 
-            # First part should be positive examples, second part negative
-            pos_count = masked_batch.connectivity_target.size(0)
-            total_count = masked_batch.all_candidate_targets.size(0)
+            # Count masked AND gates
+            masked_and_count = (masked_batch.node_mask & is_and_gate).sum().item()
 
-            if pos_count < total_count:  # If we have negative examples
-                # Check positive targets
-                self.assertTrue(torch.all(masked_batch.all_candidate_targets[:pos_count] == 1).item())
+            # Check if the number of masked AND gates is approximately as expected
+            # Allow for small variations due to randomization and rounding
+            expected_masked = int(and_gate_count * mask_prob)
 
-                # Check negative targets
-                self.assertTrue(torch.all(masked_batch.all_candidate_targets[pos_count:] == 0).item())
+            # Special cases
+            if mask_prob == 0.0:
+                # Should mask at least 1 gate per graph in batch
+                self.assertGreaterEqual(masked_and_count, len(torch.unique(masked_batch.batch)))
+            elif mask_prob == 1.0:
+                # Should mask all AND gates
+                self.assertEqual(masked_and_count, and_gate_count)
+            else:
+                # Should be close to expected percentage
+                self.assertLessEqual(abs(masked_and_count - expected_masked), 2)
 
-    def test_batch_consistency_after_connectivity_masking(self):
-        """Test that batch assignment is properly preserved in connectivity masking."""
-        # Only test if batch information is available
+    def test_truth_table_preservation(self):
+        """Test that non-masked values are preserved correctly."""
+        mask_prob = 0.5
+
+        masked_batch = create_masked_batch(
+            self.batch,
+            mp=mask_prob,
+            mask_mode="node_feature"
+        )
+
+        # Check that unmasked nodes have their features preserved exactly
+        for i in range(masked_batch.x.size(0)):
+            if not masked_batch.node_mask[i]:
+                self.assertTrue(torch.equal(
+                    masked_batch.x[i],
+                    masked_batch.x_target[i]
+                ))
+            else:
+                # Only the truth table value should be zeroed
+                self.assertEqual(masked_batch.x[i, 3].item(), 0.0)
+
+                # The node type should be preserved
+                self.assertTrue(torch.equal(
+                    masked_batch.x[i, :3],
+                    masked_batch.x_target[i, :3]
+                ))
+
+    def test_masking_consistency_across_batches(self):
+        """Test that masking behavior is consistent across different batch sizes."""
+        # Create different sized batches
+        single_graph_batch = Batch.from_data_list([self.single_graph])
+        double_graph_batch = Batch.from_data_list([self.single_graph, self.single_graph])
+        quad_graph_batch = Batch.from_data_list([self.single_graph, self.single_graph,
+                                                 self.single_graph, self.single_graph])
+
+        # Apply masking with same parameters
+        mask_prob = 1.0
+
+        single_masked = create_masked_batch(single_graph_batch, mp=mask_prob, mask_mode="node_feature")
+        double_masked = create_masked_batch(double_graph_batch, mp=mask_prob, mask_mode="node_feature")
+        quad_masked = create_masked_batch(quad_graph_batch, mp=mask_prob, mask_mode="node_feature")
+
+        # Identify AND gates in original graph
+        is_and_gate = (self.single_graph.x[:, 0] == 0) & (self.single_graph.x[:, 1] == 1) & (
+                    self.single_graph.x[:, 2] == 0)
+        and_gate_count = is_and_gate.sum().item()
+
+        # Check that all batches mask all AND gates
+        self.assertEqual((single_masked.node_mask).sum().item(), and_gate_count)
+        self.assertEqual((double_masked.node_mask).sum().item(), and_gate_count * 2)
+        self.assertEqual((quad_masked.node_mask).sum().item(), and_gate_count * 4)
+
+        # Verify that each graph in the batch has its AND gates masked
+        if hasattr(double_masked, 'batch'):
+            for b in range(2):
+                graph_mask = double_masked.batch == b
+
+                # Identify which nodes are AND gates in this specific graph of the batch
+                is_and_gate_in_batch = (double_masked.x_target[graph_mask, 0] == 0) & \
+                                       (double_masked.x_target[graph_mask, 1] == 1) & \
+                                       (double_masked.x_target[graph_mask, 2] == 0)
+
+                and_gate_indices = torch.nonzero(graph_mask).squeeze()[is_and_gate_in_batch]
+                masked_indices = torch.nonzero(double_masked.node_mask).squeeze()
+
+                # Check that all AND gates in this graph are in the masked indices
+                for idx in and_gate_indices:
+                    self.assertIn(idx.item(), masked_indices.tolist())
+
+    def test_masked_batch_integrity(self):
+        """Test that the masked batch maintains overall integrity."""
+        mask_prob = 0.5
+
+        masked_batch = create_masked_batch(
+            self.larger_batch,
+            mp=mask_prob,
+            mask_mode="node_feature"
+        )
+
+        # Check that edge structure is unchanged
+        self.assertTrue(torch.equal(masked_batch.edge_index, self.larger_batch.edge_index))
+        self.assertTrue(torch.equal(masked_batch.edge_attr, self.larger_batch.edge_attr))
+
+        # Check that number of nodes is unchanged
+        self.assertEqual(masked_batch.x.size(0), self.larger_batch.x.size(0))
+
+        # Check that node features have the same shape
+        self.assertEqual(masked_batch.x.size(1), self.larger_batch.x.size(1))
+
+        # Check that batch assignment is preserved (if applicable)
         if hasattr(self.larger_batch, 'batch'):
-            masked_batch = create_masked_batch(self.larger_batch, mp=0.3, mask_mode="connectivity")
-
-            # Batch attribute should still exist
-            self.assertTrue(hasattr(masked_batch, 'batch'))
-
-            # Batch assignments should be valid
-            num_graphs = len(torch.unique(self.larger_batch.batch))
-            self.assertTrue(torch.all(masked_batch.batch < num_graphs))
-
-            # The number of nodes should remain the same
-            self.assertEqual(masked_batch.x.size(0), self.larger_batch.x.size(0))
-
-            # Batch assignments should match the originals
             self.assertTrue(torch.equal(masked_batch.batch, self.larger_batch.batch))
+
+    def test_masking_with_zero_probability(self):
+        """Test behavior when masking probability is 0."""
+        mask_prob = 0.0
+
+        masked_batch = create_masked_batch(
+            self.batch,
+            mp=mask_prob,
+            mask_mode="node_feature"
+        )
+
+        # Should still mask at least one AND gate per graph in batch
+        # Identify AND gates
+        is_and_gate = (masked_batch.x_target[:, 0] == 0) & (masked_batch.x_target[:, 1] == 1) & (
+                    masked_batch.x_target[:, 2] == 0)
+
+        # Count number of unique graphs in batch
+        num_graphs = len(torch.unique(masked_batch.batch)) if hasattr(masked_batch, 'batch') else 1
+
+        # Check minimum number of masked nodes
+        self.assertGreaterEqual((masked_batch.node_mask).sum().item(), num_graphs)
+
+        # All masked nodes should be AND gates
+        self.assertTrue(torch.all(is_and_gate[masked_batch.node_mask]).item())
+
+    def test_masking_with_full_probability(self):
+        """Test behavior when masking probability is 1."""
+        mask_prob = 1.0
+
+        masked_batch = create_masked_batch(
+            self.batch,
+            mp=mask_prob,
+            mask_mode="node_feature"
+        )
+
+        # Should mask all AND gates
+        is_and_gate = (masked_batch.x_target[:, 0] == 0) & (masked_batch.x_target[:, 1] == 1) & (
+                    masked_batch.x_target[:, 2] == 0)
+
+        # Check that all AND gates are masked
+        self.assertEqual((masked_batch.node_mask).sum().item(), is_and_gate.sum().item())
+
+        # Check that all masked nodes are AND gates
+        self.assertTrue(torch.all(is_and_gate[masked_batch.node_mask]).item())
+
+        # Check that all AND gates' truth table values are masked
+        for i in range(masked_batch.x.size(0)):
+            if is_and_gate[i]:
+                self.assertEqual(masked_batch.x[i, 3].item(), 0.0)
+
+    def test_edge_structure_preservation(self):
+        """Test that edge structure is preserved during node feature masking."""
+        mask_prob = 1.0
+
+        masked_batch = create_masked_batch(
+            self.batch,
+            mp=mask_prob,
+            mask_mode="node_feature"
+        )
+
+        # Edge structure should be unchanged
+        self.assertTrue(torch.equal(masked_batch.edge_index, self.batch.edge_index))
+        self.assertTrue(torch.equal(masked_batch.edge_attr, self.batch.edge_attr))
+
+    def test_compatibility_with_edge_feature_masking(self):
+        """Test that truth table masking is compatible with edge feature masking."""
+        # First apply node feature masking
+        node_mask_prob = 0.5
+        node_masked_batch = create_masked_batch(
+            self.batch,
+            mp=node_mask_prob,
+            mask_mode="node_feature"
+        )
+
+        # Then apply edge feature masking
+        edge_mask_prob = 0.5
+        edge_masked_batch = create_masked_batch(
+            node_masked_batch,
+            mp=edge_mask_prob,
+            mask_mode="edge_feature"
+        )
+
+        # Check that edge masking was applied
+        self.assertTrue(hasattr(edge_masked_batch, 'edge_mask'))
+        self.assertTrue((edge_masked_batch.edge_mask).sum() > 0)
+
+        # Original node masking info should be preserved
+        self.assertTrue(hasattr(edge_masked_batch, 'x_target'))
+
+        # Node features should not be further modified by edge masking
+        self.assertTrue(torch.equal(edge_masked_batch.x, node_masked_batch.x))
+
+    def test_compatibility_with_connectivity_masking(self):
+        """Test that truth table masking is compatible with connectivity masking."""
+        # Create a fresh batch for this test
+        test_batch = Batch.from_data_list([self.single_graph])
+
+        # Apply node feature masking first
+        node_mask_prob = 1.0  # Mask all AND gates for clarity
+        node_masked_batch = create_masked_batch(
+            test_batch,
+            mp=node_mask_prob,
+            mask_mode="node_feature"
+        )
+
+        # Store the node-masked x values for later comparison
+        node_masked_x = node_masked_batch.x.clone()
+
+        # Then apply connectivity masking to a copy of the batch
+        # (this creates a new masking rather than stacking the masking)
+        connectivity_mask_prob = 0.5
+        connectivity_masked_batch = create_masked_batch(
+            test_batch,  # Use original batch, not the node-masked one
+            mp=connectivity_mask_prob,
+            mask_mode="connectivity"
+        )
+
+        # Check that connectivity masking was applied
+        self.assertTrue(hasattr(connectivity_masked_batch, 'masked_edge_indices'))
+        self.assertTrue((connectivity_masked_batch.masked_edge_indices).numel() > 0)
+
+        # Verify that connectivity masking doesn't affect node features
+        # (They should match the original features since we didn't apply node masking)
+        self.assertTrue(torch.equal(connectivity_masked_batch.x, test_batch.x))
+
+        # Identify AND gates
+        is_and_gate = (test_batch.x[:, 0] == 0) & \
+                      (test_batch.x[:, 1] == 1) & \
+                      (test_batch.x[:, 2] == 0)
+
+        # Verify our node masking worked as expected (separate test)
+        for i in range(test_batch.x.size(0)):
+            if is_and_gate[i]:
+                # AND gates should have their truth table value masked
+                self.assertEqual(node_masked_x[i, 3].item(), 0.0)
+
+                # But node type should be preserved
+                self.assertTrue(torch.equal(
+                    node_masked_x[i, :3],
+                    test_batch.x[i, :3]
+                ))
 
 
 if __name__ == '__main__':

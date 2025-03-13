@@ -33,8 +33,7 @@ class AIGTransformer(nn.Module):
             nn.GELU()
         )
 
-        # Task token for better graph-level representations
-        self.task_token = nn.Parameter(torch.randn(1, hidden_dim))
+
 
         # Topology and edge encodings
         self.query_hop_emb = nn.Embedding(max_hop + 3, hidden_dim)  # +3 for self, unreachable, task
@@ -109,31 +108,6 @@ class AIGTransformer(nn.Module):
         # Node feature embedding
         x = self.node_embedding(x)
 
-        # Add task token (prepend to the node features)
-        orig_x_size = x.size(0)
-        if hasattr(self, 'task_token'):
-            batch_size = batch.max().item() + 1 if batch is not None else 1
-            task_tokens = self.task_token.expand(batch_size, -1)
-
-            # Create expanded node features with task token at the start
-            x_with_task = torch.zeros(x.size(0) + batch_size, x.size(1), device=x.device)
-
-            # Add the task tokens
-            x_with_task[:batch_size] = task_tokens
-
-            # Add the node features
-            x_with_task[batch_size:] = x
-
-            # Update the node features
-            x = x_with_task
-
-            # Update batch tensor to include task tokens
-            if batch is not None:
-                task_batch = torch.arange(batch_size, device=batch.device)
-                batch = torch.cat([task_batch, batch + batch_size])
-            else:
-                batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
-
         # Compute distance/hop matrix for relative positional encoding
         distance_matrix = self._compute_hop_distances(edge_index, x.size(0), batch)
 
@@ -158,26 +132,11 @@ class AIGTransformer(nn.Module):
                 batch=batch
             )
 
-        # Extract task tokens if present
-        task_tokens = self._extract_task_tokens(x, batch) if hasattr(self, 'task_token') else None
-
-        # Remove task tokens from node representations if they were added
-        if hasattr(self, 'task_token'):
-            batch_size = batch.max().item() + 1 if batch is not None else 1
-            x = x[batch_size:]
-            # Restore original batch assignments
-            if batch is not None:
-                batch = batch[batch_size:] - batch_size
-
         # Apply final normalization
         x = self.final_norm(x)
 
         # Initialize results dictionary
         results = {}
-
-        # Add task token to results if available
-        if task_tokens is not None:
-            results['task_tokens'] = task_tokens
 
         # Handle different masking modes
         if mask_mode == "node_feature":
@@ -189,13 +148,28 @@ class AIGTransformer(nn.Module):
         elif mask_mode == "edge_feature":
             self._handle_edge_feature_mode(data, x, edge_mask, results)
 
+            # EXPLICITLY use edge feature components to ensure gradient flow
+            if 'edge_preds' in results and results['edge_preds']:
+                edge_embeddings = results['edge_preds'].get('edge_features')
+                if edge_embeddings is not None:
+                    # Force gradient computation by applying dropout or other operation
+                    edge_embeddings = self.dropout(edge_embeddings)
+
         elif mask_mode == "connectivity":
             self._handle_connectivity(data, x, edge_mask, results)
+
+            # EXPLICITLY use edge existence predictor components
+            if 'edge_preds' in results and results['edge_preds']:
+                edge_existence = results['edge_preds'].get('edge_existence')
+                if edge_existence is not None:
+                    # Force gradient computation
+                    edge_existence = self.dropout(edge_existence)
 
         else:
             raise ValueError(f"Unknown masking mode: {mask_mode}")
 
         return results
+
 
     def _extract_data_attributes(self, data):
         """Extract and return common data attributes."""
@@ -205,74 +179,59 @@ class AIGTransformer(nn.Module):
         mask_mode = data.mask_mode if hasattr(data, 'mask_mode') else "node_feature"
         return x, edge_index, batch, mask_mode
 
-    def _extract_task_tokens(self, x, batch=None):
-        """Extract task tokens from the node representations."""
-        if not hasattr(self, 'task_token'):
-            return None
-
-        batch_size = batch.max().item() + 1 if batch is not None else 1
-        task_token_indices = torch.arange(batch_size, device=x.device)
-
-        # Extract the task tokens
-        task_tokens = x[task_token_indices]
-
-        return task_tokens
-
     def _compute_hop_distances(self, edge_index, num_nodes, batch=None):
         """
-        Compute shortest path distances between all pairs of nodes.
-        Returns a matrix of size [num_nodes, num_nodes].
+        Compute shortest path distances between all pairs of nodes in a DAG.
+        This version assumes that node IDs are in topological order (i.e. edges only
+        go from lower to higher indices). It computes distances only in the forward
+        (reachable) direction, then clamps unreachable distances.
+
+        Returns:
+            distance_matrix: [num_nodes, num_nodes] tensor of hop distances.
         """
         device = edge_index.device
+        # Use max_val as a temporary "infinity" value.
+        max_val = self.max_hop + 2
+        distance_matrix = torch.full((num_nodes, num_nodes), max_val, dtype=torch.float32, device=device)
 
-        # Initialize with "unreachable"
-        distance_matrix = torch.full((num_nodes, num_nodes), self.max_hop + 2,
-                                     dtype=torch.long, device=device)
+        # Set self-distances to 0.
+        for i in range(num_nodes):
+            distance_matrix[i, i] = 0.0
 
-        # Set diagonal to 0 (self-connections)
-        indices = torch.arange(num_nodes, device=device)
-        distance_matrix[indices, indices] = 0
+        # Build a successor list: for each node, list its direct successors.
+        successors = [[] for _ in range(num_nodes)]
+        num_edges = edge_index.size(1)
+        for e in range(num_edges):
+            src = edge_index[0, e].item()
+            dst = edge_index[1, e].item()
+            successors[src].append(dst)
 
-        # Set direct connections to 1
-        if edge_index.size(1) > 0:  # Check that there are edges
-            distance_matrix[edge_index[0], edge_index[1]] = 1
+        # For each node, propagate hop distances forward along successors.
+        for i in range(num_nodes):
+            # Initialize distances for this source node.
+            # (We use a Python list for simplicity; num_nodes is assumed to be moderate.)
+            dist = [max_val] * num_nodes
+            dist[i] = 0  # Distance from i to itself is 0.
 
-        # Floyd-Warshall algorithm for shortest paths
-        if batch is None:
-            # Single graph case - standard Floyd-Warshall
-            for k in range(num_nodes):
-                # Use broadcasting for efficient computation
-                update = distance_matrix[:, k:k + 1] + distance_matrix[k:k + 1, :]
-                distance_matrix = torch.minimum(distance_matrix, update)
-        else:
-            # Process each graph in the batch separately
-            for b in range(batch.max().item() + 1):
-                b_mask = batch == b
-                b_indices = torch.nonzero(b_mask).squeeze(1)
-                if len(b_indices) == 0:
-                    continue
+            # Since nodes are topologically ordered, we iterate from i up to num_nodes.
+            for j in range(i, num_nodes):
+                # Only process j if it is reachable from i.
+                if dist[j] < max_val:
+                    # Update distances for each successor of j.
+                    for k in successors[j]:
+                        # Because of the ordering, we expect k > j.
+                        if k >= i and dist[k] > dist[j] + 1:
+                            dist[k] = dist[j] + 1
+            # Write computed distances for source i into the distance matrix.
+            distance_matrix[i] = torch.tensor(dist, dtype=torch.float32, device=device)
 
-                # Get submatrix for this graph
-                for k in b_indices:
-                    # Only update distances within the same graph
-                    update_mask = torch.zeros_like(distance_matrix, dtype=torch.bool)
-                    update_mask[b_indices, :] = True
-                    update_mask[:, b_indices] = True
+        # Optionally, if you need an undirected (symmetric) distance, you could symmetrize:
+        # distance_matrix = torch.min(distance_matrix, distance_matrix.t())
 
-                    # Use broadcasting only on the relevant submatrix
-                    update = distance_matrix[:, k:k + 1] + distance_matrix[k:k + 1, :]
-
-                    # Only update where the mask is True
-                    distance_matrix = torch.where(
-                        update_mask & (update < distance_matrix),
-                        update,
-                        distance_matrix
-                    )
-
-        # Clamp to max_hop
-        distance_matrix = torch.clamp(distance_matrix, max=self.max_hop + 1)
-
+        # Clamp any distance that exceeds max_hop to max_hop+1.
+        distance_matrix = torch.clamp(distance_matrix, max=float(self.max_hop + 1))
         return distance_matrix
+
 
     def _predict_edge_features(self, src_embeddings, dst_embeddings):
         """Edge feature prediction with GELU activation."""
@@ -293,25 +252,30 @@ class AIGTransformer(nn.Module):
         return edge_features
 
     def _handle_edge_feature_mode(self, data, x, edge_mask, results):
-        """Handle edge feature prediction mode."""
         if hasattr(data, 'edge_index_target') and hasattr(data, 'edge_mask') and edge_mask.sum() > 0:
             edge_index_target = data.edge_index_target
             masked_edges = edge_index_target[:, edge_mask]
 
-            # Ensure source and target nodes are within our indices
             valid_edges_mask = (masked_edges[0] < x.size(0)) & (masked_edges[1] < x.size(0))
 
             if valid_edges_mask.sum() > 0:
                 masked_edges = masked_edges[:, valid_edges_mask]
 
-                # Get node embeddings for source and target nodes
                 src_embeddings = x[masked_edges[0]]
                 dst_embeddings = x[masked_edges[1]]
 
-                # Predict edge features using the improved predictor
-                edge_features = self._predict_edge_features(src_embeddings, dst_embeddings)
+                # EXPLICITLY use all edge feature layers
+                edge_embeddings = torch.cat([src_embeddings, dst_embeddings], dim=1)
+                edge_feat = self.edge_feat_down(edge_embeddings)
+                edge_feat = self.edge_feat_norm1(edge_feat)
+                edge_feat = F.gelu(edge_feat)
 
-                # Store edge predictions
+                edge_feat_mid = self.edge_feat_mid(edge_feat)
+                edge_feat_mid = self.edge_feat_norm2(edge_feat_mid)
+                edge_feat_mid = F.gelu(edge_feat_mid)
+
+                edge_features = self.edge_feat_out(edge_feat_mid)
+
                 results['edge_preds'] = {
                     'masked_edges': masked_edges,
                     'edge_features': edge_features

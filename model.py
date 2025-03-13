@@ -6,6 +6,7 @@ from torch_scatter import scatter_add, scatter_mean, scatter_max
 from layers import *
 
 
+
 class AIGTransformer(nn.Module):
     def __init__(
             self,

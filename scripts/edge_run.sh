@@ -34,14 +34,6 @@ BATCH_SIZE=64
 EPOCHS=100
 MASK_MODE="edge_feature"
 
-# Create master directory for this run
-MASTER_DIR="./results/${RUN_ID}"
-mkdir -p "$MASTER_DIR"
-mkdir -p "${MASTER_DIR}/models"
-
-echo "Starting progressive mask probability training with optimized parameters..."
-echo "Run ID: $RUN_ID"
-echo "Master directory: $MASTER_DIR"
 
 # Log start of experiment
 echo "Configuration:"
@@ -67,18 +59,16 @@ for MASK_PROB in "${MASK_PROBS[@]}"; do
 
     # Set run name
     RUN_NAME="${MASK_MODE}_mp${MASK_PROB_DIR}"
-    EXP_DIR="${MASTER_DIR}/${RUN_NAME}"
+
 
     echo "==================================================="
     echo "Starting training with mask probability: $MASK_PROB"
     echo "Run name: $RUN_NAME"
     echo "Using pretrained model: $PRETRAINED_MODEL"
 
-    # Create directory for this run
-    mkdir -p "$EXP_DIR"
 
     # Build command
-    CMD="python main.py \
+    CMD="srun python main.py \
       --num_graphs $NUM_GRAPHS \
       --mask_prob $MASK_PROB \
       --mask_mode $MASK_MODE \

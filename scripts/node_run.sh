@@ -34,10 +34,6 @@ BATCH_SIZE=64
 EPOCHS=100
 MASK_MODE="node_feature"
 
-# Create master directory for this run
-MASTER_DIR="./results/${RUN_ID}"
-mkdir -p "$MASTER_DIR"
-mkdir -p "${MASTER_DIR}/models"
 
 echo "Starting progressive mask probability training with optimized parameters..."
 echo "Run ID: $RUN_ID"
@@ -78,7 +74,7 @@ for MASK_PROB in "${MASK_PROBS[@]}"; do
     mkdir -p "$EXP_DIR"
 
     # Build command
-    CMD="python main.py \
+    CMD="srun python main.py \
       --num_graphs $NUM_GRAPHS \
       --mask_prob $MASK_PROB \
       --mask_mode $MASK_MODE \

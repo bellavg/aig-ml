@@ -1,7 +1,9 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import math
+from torch_scatter import scatter_add, scatter_mean, scatter_max
 from layers import *
-from torch.nn import functional as F
 
 
 class AIGTransformer(nn.Module):
@@ -9,12 +11,12 @@ class AIGTransformer(nn.Module):
             self,
             node_features=4,
             edge_features=2,
-            hidden_dim=128,  # [YOURS - Increased from 64]
-            num_layers=3,  # [YOURS - Increased from 2]
-            num_heads=4,  # [YOURS - Increased from 2]
-            dropout=0.2,  # [YOURS - Increased from 0.1]
+            hidden_dim=128,
+            num_layers=3,
+            num_heads=4,
+            dropout=0.2,
             max_nodes=120,
-            max_hop=5  # [GRPE - New parameter for max hop distance]
+            max_hop=5
     ):
         super(AIGTransformer, self).__init__()
 
@@ -24,17 +26,17 @@ class AIGTransformer(nn.Module):
         self.max_hop = max_hop
         self.num_heads = num_heads
 
-        # [YOURS with improvements] Node feature embedding with batch normalization
+        # Node feature embedding with batch normalization
         self.node_embedding = nn.Sequential(
             nn.Linear(node_features, hidden_dim),
             nn.LayerNorm(hidden_dim),
-            nn.GELU()  # [YOURS - GELU instead of ReLU]
+            nn.GELU()
         )
 
-        # [GRPE] Task token for better graph-level representations
+        # Task token for better graph-level representations
         self.task_token = nn.Parameter(torch.randn(1, hidden_dim))
 
-        # [GRPE] Topology and edge encodings
+        # Topology and edge encodings
         self.query_hop_emb = nn.Embedding(max_hop + 3, hidden_dim)  # +3 for self, unreachable, task
         self.key_hop_emb = nn.Embedding(max_hop + 3, hidden_dim)
         self.value_hop_emb = nn.Embedding(max_hop + 3, hidden_dim)
@@ -43,27 +45,26 @@ class AIGTransformer(nn.Module):
         self.key_edge_emb = nn.Embedding(edge_features + 4, hidden_dim)
         self.value_edge_emb = nn.Embedding(edge_features + 4, hidden_dim)
 
-        # [COMBINED] Transformer layers based on your design but with GRPE concepts
+        # Transformer layers with DAG-specific attention
         self.layers = nn.ModuleList([
-            TransformerEncoderLayer(  # This is a custom layer you'll need to implement
+            DAGTransformerLayer(
                 d_model=hidden_dim,
                 nhead=num_heads,
-                dim_feedforward=hidden_dim * 4,  # [YOURS - Wider FFN]
+                dim_feedforward=hidden_dim * 4,
                 dropout=dropout,
-                activation="gelu",  # [YOURS - GELU instead of ReLU]
-                batch_first=True
+                max_hop=max_hop
             )
             for _ in range(num_layers)
         ])
 
-        # [DAGformer] Structure extractor
+        # Structure extractor
         self.structure_extractor = StructureExtractor(
             hidden_dim,
             num_layers=2,
             batch_norm=True
         )
 
-        # [YOURS - improved] Node feature prediction head
+        # Node feature prediction head
         self.node_predictor = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -75,49 +76,74 @@ class AIGTransformer(nn.Module):
             nn.Linear(hidden_dim // 2, node_features)
         )
 
-        # [YOURS] Edge feature prediction components
+        # Edge feature prediction components
         self.edge_feat_down = nn.Linear(hidden_dim * 2, hidden_dim)
         self.edge_feat_norm1 = nn.LayerNorm(hidden_dim)
         self.edge_feat_mid = nn.Linear(hidden_dim, hidden_dim // 2)
         self.edge_feat_norm2 = nn.LayerNorm(hidden_dim // 2)
         self.edge_feat_out = nn.Linear(hidden_dim // 2, edge_features)
 
-        # [YOURS with improvements] Edge existence prediction
+        # Edge existence prediction
         self.edge_existence_predictor = nn.Sequential(
             nn.Linear(hidden_dim * 2, hidden_dim),
             nn.LayerNorm(hidden_dim),
-            nn.GELU(),  # [YOURS - GELU instead of ReLU]
+            nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.GELU(),  # [YOURS - GELU instead of ReLU]
+            nn.GELU(),
             nn.Linear(hidden_dim // 2, 1)
         )
 
         self.dropout = nn.Dropout(dropout)
 
-        # [YOURS - addition] Final layer norm for better training stability
+        # Final layer norm for better training stability
         self.final_norm = nn.LayerNorm(hidden_dim)
 
     def forward(self, data):
-        # [YOURS] Extract data attributes
+        # Extract data attributes
         x, edge_index, batch, mask_mode = self._extract_data_attributes(data)
         edge_attr = data.edge_attr if hasattr(data, 'edge_attr') else None
         node_mask = data.node_mask if hasattr(data, 'node_mask') else None
         edge_mask = data.edge_mask if hasattr(data, 'edge_mask') else None
 
-        # [YOURS] Node feature embedding
+        # Node feature embedding
         x = self.node_embedding(x)
 
-        # [GRPE] Compute distance/hop matrix for relative positional encoding
+        # Add task token (prepend to the node features)
+        orig_x_size = x.size(0)
+        if hasattr(self, 'task_token'):
+            batch_size = batch.max().item() + 1 if batch is not None else 1
+            task_tokens = self.task_token.expand(batch_size, -1)
+
+            # Create expanded node features with task token at the start
+            x_with_task = torch.zeros(x.size(0) + batch_size, x.size(1), device=x.device)
+
+            # Add the task tokens
+            x_with_task[:batch_size] = task_tokens
+
+            # Add the node features
+            x_with_task[batch_size:] = x
+
+            # Update the node features
+            x = x_with_task
+
+            # Update batch tensor to include task tokens
+            if batch is not None:
+                task_batch = torch.arange(batch_size, device=batch.device)
+                batch = torch.cat([task_batch, batch + batch_size])
+            else:
+                batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
+
+        # Compute distance/hop matrix for relative positional encoding
         distance_matrix = self._compute_hop_distances(edge_index, x.size(0), batch)
 
         # Apply transformer layers
         for layer_idx, layer in enumerate(self.layers):
-            # [GRPE] Extract structural features
+            # Extract structural features
             x_struct = self.structure_extractor(x, edge_index, edge_attr)
             x = x + x_struct  # Residual connection with structural features
 
-            # [COMBINED] Apply transformer layer with relative positional encoding
+            # Apply transformer layer with relative positional encoding
             x = layer(
                 x=x,
                 distance_matrix=distance_matrix,
@@ -132,13 +158,28 @@ class AIGTransformer(nn.Module):
                 batch=batch
             )
 
-        # [YOURS] Apply final normalization
+        # Extract task tokens if present
+        task_tokens = self._extract_task_tokens(x, batch) if hasattr(self, 'task_token') else None
+
+        # Remove task tokens from node representations if they were added
+        if hasattr(self, 'task_token'):
+            batch_size = batch.max().item() + 1 if batch is not None else 1
+            x = x[batch_size:]
+            # Restore original batch assignments
+            if batch is not None:
+                batch = batch[batch_size:] - batch_size
+
+        # Apply final normalization
         x = self.final_norm(x)
 
-        # [YOURS] Initialize results dictionary
+        # Initialize results dictionary
         results = {}
 
-        # [YOURS] Handle different masking modes
+        # Add task token to results if available
+        if task_tokens is not None:
+            results['task_tokens'] = task_tokens
+
+        # Handle different masking modes
         if mask_mode == "node_feature":
             node_out = self.node_predictor(x)
             results['node_features'] = node_out
@@ -156,7 +197,6 @@ class AIGTransformer(nn.Module):
 
         return results
 
-    # [YOURS] Extract data attributes
     def _extract_data_attributes(self, data):
         """Extract and return common data attributes."""
         x = data.x
@@ -165,7 +205,19 @@ class AIGTransformer(nn.Module):
         mask_mode = data.mask_mode if hasattr(data, 'mask_mode') else "node_feature"
         return x, edge_index, batch, mask_mode
 
-    # [GRPE] Compute hop distances between nodes
+    def _extract_task_tokens(self, x, batch=None):
+        """Extract task tokens from the node representations."""
+        if not hasattr(self, 'task_token'):
+            return None
+
+        batch_size = batch.max().item() + 1 if batch is not None else 1
+        task_token_indices = torch.arange(batch_size, device=x.device)
+
+        # Extract the task tokens
+        task_tokens = x[task_token_indices]
+
+        return task_tokens
+
     def _compute_hop_distances(self, edge_index, num_nodes, batch=None):
         """
         Compute shortest path distances between all pairs of nodes.
@@ -222,7 +274,6 @@ class AIGTransformer(nn.Module):
 
         return distance_matrix
 
-    # [YOURS with GELU improvement] Edge feature prediction
     def _predict_edge_features(self, src_embeddings, dst_embeddings):
         """Edge feature prediction with GELU activation."""
         # Concatenate embeddings
@@ -231,17 +282,16 @@ class AIGTransformer(nn.Module):
         # Apply predictor with skip connections
         edge_feat = self.edge_feat_down(edge_embeddings)
         edge_feat = self.edge_feat_norm1(edge_feat)
-        edge_feat = F.gelu(edge_feat)  # [YOURS - GELU instead of ReLU]
+        edge_feat = F.gelu(edge_feat)
         edge_feat_mid = self.edge_feat_mid(edge_feat)
         edge_feat_mid = self.edge_feat_norm2(edge_feat_mid)
-        edge_feat_mid = F.gelu(edge_feat_mid)  # [YOURS - GELU instead of ReLU]
+        edge_feat_mid = F.gelu(edge_feat_mid)
 
         # Final prediction
         edge_features = self.edge_feat_out(edge_feat_mid)
 
         return edge_features
 
-    # [YOURS] Handle edge feature prediction mode
     def _handle_edge_feature_mode(self, data, x, edge_mask, results):
         """Handle edge feature prediction mode."""
         if hasattr(data, 'edge_index_target') and hasattr(data, 'edge_mask') and edge_mask.sum() > 0:
@@ -267,7 +317,6 @@ class AIGTransformer(nn.Module):
                     'edge_features': edge_features
                 }
 
-    # [YOURS] Handle connectivity prediction mode
     def _handle_connectivity(self, data, x, edge_mask, results):
         """Handle connectivity prediction mode."""
         if hasattr(data, 'all_candidate_pairs'):

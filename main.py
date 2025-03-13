@@ -46,7 +46,7 @@ def parse_args():
                         help="Ratio of dataset used for validation")
     parser.add_argument('--test_ratio', type=float, default=0.1,
                         help="Ratio of dataset used for testing")
-    parser.add_argument('--val_freq', type=int, default=2,
+    parser.add_argument('--val_freq', type=int, default=5,
                         help="Frequency (in epochs) to run validation")
 
     parser.add_argument('--device', type=str, default='cuda',
@@ -82,7 +82,7 @@ def parse_args():
                         help="Batch size for training")
     parser.add_argument('--lr', type=float, default=0.001,
                         help="Learning rate")
-    parser.add_argument('--early_stopping', type=int, default=10,
+    parser.add_argument('--early_stopping', type=int, default=5,
                         help="Number of epochs to wait for improvement before early stopping")
     parser.add_argument('--seed', type=int, default=42,
                         help="Random seed for reproducibility")

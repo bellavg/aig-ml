@@ -188,7 +188,7 @@ def main():
     node_features = sample.x.size(1)
     edge_features = sample.edge_attr.size(1) if hasattr(sample, 'edge_attr') else 0
 
-    print(f"Model input features: nodes={node_features}, edges={edge_features}")
+    print(f"Model input features: node dim={node_features}, edge dim={edge_features}")
 
     # Print masking strategy
     print(f"Using {args.mask_mode} masking at {args.mask_prob * 100:.1f}% probability")
@@ -267,7 +267,6 @@ def main():
         mode='min',  # 'min' since we're tracking loss
         factor=0.5,  # multiply lr by this factor on plateau
         patience=5,  # number of epochs with no improvement
-        verbose=True,  # print message when lr is reduced
         min_lr=1e-6,  # lower bound on the learning rate
         threshold=0.0001,  # minimum change to qualify as improvement
         threshold_mode='rel'  # use relative change

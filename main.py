@@ -46,7 +46,7 @@ def parse_args():
                         help="Ratio of dataset used for validation")
     parser.add_argument('--test_ratio', type=float, default=0.2,
                         help="Ratio of dataset used for testing")
-    parser.add_argument('--val_freq', type=int, default=5,
+    parser.add_argument('--val_freq', type=int, default=3,
                         help="Frequency (in epochs) to run validation")
 
     parser.add_argument('--device', type=str, default='cuda',

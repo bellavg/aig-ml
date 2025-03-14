@@ -102,7 +102,7 @@ def train_epoch(args: Any, model: nn.Module, train_loader: Any,
         batch_count += 1
 
         # Print progress every 10 batches
-        if batch_idx % 10 == 0:
+        if batch_idx % 100 == 0:
             print(f"Processed batch {batch_idx}/{len(train_loader)}, Loss: {loss.item():.4f}")
 
     # Average losses over all batches

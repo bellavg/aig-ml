@@ -31,21 +31,10 @@ echo "Run ID: $RUN_ID"
 echo "Master directory: $MASTER_DIR"
 
 # Log start of experiment
-echo "Configuration:"
-echo "Number of graphs: $NUM_GRAPHS"
-echo "Batch size: $BATCH_SIZE"
-echo "Epochs per mask level: $EPOCHS"
-echo "Learning rate: $LEARNING_RATE"
-echo "Hidden dim: $HIDDEN_DIM"
-echo "Num layers: $NUM_LAYERS"
-echo "Num heads: $NUM_HEADS"
-echo "Dropout: $DROPOUT"
-echo "Seed: $SEED"
 echo "Mask mode: $MASK_MODE"
 
 # Array of mask probabilities to try
 MASK_PROBS=(0.2 0.4 0.6 0.8)
-PRETRAINED_MODEL=""
 
 # Train models with progressive masking
 for MASK_PROB in "${MASK_PROBS[@]}"; do
@@ -59,40 +48,22 @@ for MASK_PROB in "${MASK_PROBS[@]}"; do
     echo "==================================================="
     echo "Starting training with mask probability: $MASK_PROB"
     echo "Run name: $RUN_NAME"
-    echo "Using pretrained model: $PRETRAINED_MODEL"
 
     # Create directory for this run
     mkdir -p "$EXP_DIR"
 
     # Build command
     CMD="srun python main.py \
-      --num_graphs $NUM_GRAPHS \
       --mask_prob $MASK_PROB \
       --mask_mode $MASK_MODE \
-      --batch_size $BATCH_SIZE \
-      --num_epochs $EPOCHS \
-      --lr $LEARNING_RATE \
-      --hidden_dim $HIDDEN_DIM \
-      --num_layers $NUM_LAYERS \
-      --num_heads $NUM_HEADS \
-      --dropout $DROPOUT \
-      --seed $SEED \
       "
-
-    # Add pretrained model parameter if not first run
-    if [ -n "$PRETRAINED_MODEL" ]; then
-        CMD="$CMD --pretrained_model \"$PRETRAINED_MODEL\""
-    fi
 
     # Execute the command
     echo "Executing: $CMD"
     eval "$CMD"
 
-    # Update pretrained model path for next iteration
-    PRETRAINED_MODEL="$./models/${RUN_NAME}_best.pt"
 
-    echo "Completed training with mask probability: $MASK_PROB"
-    echo "Best model saved at: $PRETRAINED_MODEL"
+    echo "Completed node feature training with mask probability: $MASK_PROB"
     echo "==================================================="
 done
 

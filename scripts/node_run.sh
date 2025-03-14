@@ -49,8 +49,6 @@ for MASK_PROB in "${MASK_PROBS[@]}"; do
     echo "Starting training with mask probability: $MASK_PROB"
     echo "Run name: $RUN_NAME"
 
-    # Create directory for this run
-    mkdir -p "$EXP_DIR"
 
     # Build command
     CMD="srun python main.py \

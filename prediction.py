@@ -19,7 +19,7 @@ def reconstruct_predictions(predictions: Dict[str, Any], targets: Dict[str, Any]
 
     # Common handling: copy non-reconstructed outputs
     for key in predictions:
-        if key not in ['node_features', 'edge_preds']:
+        if key not in ['node_features', 'edge_preds', 'edge_attr_pred', 'masked_edge_indices']:
             full_pred[key] = predictions[key]
 
     # Mode-specific reconstruction
@@ -58,25 +58,72 @@ def reconstruct_predictions(predictions: Dict[str, Any], targets: Dict[str, Any]
                 full_pred['full_node_features'] = full_features
 
     elif mask_mode == "edge_feature":
-        # Reconstruct edge features if present
-        if 'edge_preds' in predictions and 'edge_features' in predictions['edge_preds']:
-            edge_preds = predictions['edge_preds']
+        # First, check for edge_attr_pred which is the direct output format
+        if 'edge_attr_pred' in predictions:
+            # Store the raw predictions for evaluation
+            full_pred['edge_attr_pred'] = predictions['edge_attr_pred']
 
-            # Create full edge features tensor with defaults from target
-            if 'edge_attr_target' in targets and 'edge_mask' in targets:
+            # Try to reconstruct full edge features if we have the necessary information
+            if 'edge_attr_target' in targets and 'edge_mask' in targets and 'masked_edge_indices' in predictions:
                 edge_features_target = targets['edge_attr_target']
                 full_edge_features = edge_features_target.clone()
 
-                # Map predictions to masked positions
-                if 'masked_edges' in edge_preds:
-                    masked_indices = torch.nonzero(targets['edge_mask']).squeeze(-1)
+                # Get masked edge indices
+                masked_indices = predictions['masked_edge_indices']
 
-                    # Map predictions to original edge indices
-                    if masked_indices.size(0) > 0 and edge_preds['edge_features'].size(0) > 0:
-                        valid_count = min(masked_indices.size(0), edge_preds['edge_features'].size(0))
-                        full_edge_features[masked_indices[:valid_count]] = edge_preds['edge_features'][:valid_count]
+                # Map predictions to original edge indices
+                if masked_indices.numel() > 0 and predictions['edge_attr_pred'].size(0) > 0:
+                    # Ensure indices are within bounds
+                    valid_mask = masked_indices < full_edge_features.size(0)
+                    if valid_mask.any():
+                        valid_indices = masked_indices[valid_mask]
+                        valid_preds = predictions['edge_attr_pred'][valid_mask]
+
+                        # Update the full edge features with predictions
+                        full_edge_features[valid_indices] = valid_preds
 
                 full_pred['full_edge_features'] = full_edge_features
+
+        # Alternative format: edge_preds dictionary
+        elif 'edge_preds' in predictions:
+            edge_preds = predictions['edge_preds']
+
+            # Handle different possible structures
+            if isinstance(edge_preds, dict):
+                # Store edge features if available
+                if 'edge_features' in edge_preds:
+                    full_pred['edge_attr_pred'] = edge_preds['edge_features']
+
+                # Create full edge features tensor with defaults from target
+                if 'edge_attr_target' in targets and 'edge_mask' in targets:
+                    edge_features_target = targets['edge_attr_target']
+                    full_edge_features = edge_features_target.clone()
+
+                    # Try using edge_indices if available
+                    if 'edge_indices' in edge_preds and 'edge_features' in edge_preds:
+                        indices = edge_preds['edge_indices']
+                        features = edge_preds['edge_features']
+
+                        # Ensure indices are within bounds
+                        valid_mask = indices < full_edge_features.size(0)
+                        if valid_mask.any():
+                            valid_indices = indices[valid_mask]
+                            valid_features = features[valid_mask]
+
+                            # Update the full edge features
+                            full_edge_features[valid_indices] = valid_features
+
+                    # Alternatively, try using masked_edges
+                    elif 'masked_edges' in edge_preds and 'edge_features' in edge_preds:
+                        # Get indices from edge_mask
+                        masked_indices = torch.nonzero(targets['edge_mask']).squeeze(-1)
+
+                        # Map predictions to original edge indices
+                        if masked_indices.size(0) > 0 and edge_preds['edge_features'].size(0) > 0:
+                            valid_count = min(masked_indices.size(0), edge_preds['edge_features'].size(0))
+                            full_edge_features[masked_indices[:valid_count]] = edge_preds['edge_features'][:valid_count]
+
+                    full_pred['full_edge_features'] = full_edge_features
 
     elif mask_mode == "connectivity":
         # Reconstruct both edge existence and edge features

@@ -234,53 +234,63 @@ class AIGTransformer(nn.Module):
         return distance_matrix
 
 
-    def _predict_edge_features(self, src_embeddings, dst_embeddings):
-        """Edge feature prediction with GELU activation."""
-        # Concatenate embeddings
-        edge_embeddings = torch.cat([src_embeddings, dst_embeddings], dim=1)
-
-        # Apply predictor with skip connections
-        edge_feat = self.edge_feat_down(edge_embeddings)
-        edge_feat = self.edge_feat_norm1(edge_feat)
-        edge_feat = F.gelu(edge_feat)
-        edge_feat_mid = self.edge_feat_mid(edge_feat)
-        edge_feat_mid = self.edge_feat_norm2(edge_feat_mid)
-        edge_feat_mid = F.gelu(edge_feat_mid)
-
-        # Final prediction
-        edge_features = self.edge_feat_out(edge_feat_mid)
-
-        return edge_features
-
     def _handle_edge_feature_mode(self, data, x, edge_mask, results):
-        if hasattr(data, 'edge_index_target') and hasattr(data, 'edge_mask') and edge_mask.sum() > 0:
-            edge_index_target = data.edge_index_target
-            masked_edges = edge_index_target[:, edge_mask]
+        """
+        Handle edge feature prediction mode.
 
-            valid_edges_mask = (masked_edges[0] < x.size(0)) & (masked_edges[1] < x.size(0))
+        Args:
+            data: PyG Data object
+            x: Node embeddings
+            edge_mask: Boolean tensor indicating which edges are masked
+            results: Dictionary to store results
+        """
+        # Check if we have masked edges
+        if hasattr(data, 'edge_index') and hasattr(data, 'edge_mask') and edge_mask.sum() > 0:
+            # Get the indices of masked edges
+            masked_edge_indices = torch.nonzero(edge_mask).squeeze(-1)
 
-            if valid_edges_mask.sum() > 0:
-                masked_edges = masked_edges[:, valid_edges_mask]
+            if masked_edge_indices.numel() > 0:
+                # Get the original edge indices
+                edge_index = data.edge_index
 
-                src_embeddings = x[masked_edges[0]]
-                dst_embeddings = x[masked_edges[1]]
+                # Extract just the masked edges
+                masked_edges = edge_index[:, masked_edge_indices]
 
-                # EXPLICITLY use all edge feature layers
-                edge_embeddings = torch.cat([src_embeddings, dst_embeddings], dim=1)
-                edge_feat = self.edge_feat_down(edge_embeddings)
-                edge_feat = self.edge_feat_norm1(edge_feat)
-                edge_feat = F.gelu(edge_feat)
+                # Ensure edges are within bounds of node embeddings
+                valid_edges_mask = (masked_edges[0] < x.size(0)) & (masked_edges[1] < x.size(0))
 
-                edge_feat_mid = self.edge_feat_mid(edge_feat)
-                edge_feat_mid = self.edge_feat_norm2(edge_feat_mid)
-                edge_feat_mid = F.gelu(edge_feat_mid)
+                if valid_edges_mask.sum() > 0:
+                    # Filter to valid edges
+                    masked_edges = masked_edges[:, valid_edges_mask]
+                    valid_masked_indices = masked_edge_indices[valid_edges_mask]
 
-                edge_features = self.edge_feat_out(edge_feat_mid)
+                    # Get node embeddings for source and target nodes
+                    src_embeddings = x[masked_edges[0]]
+                    dst_embeddings = x[masked_edges[1]]
 
-                results['edge_preds'] = {
-                    'masked_edges': masked_edges,
-                    'edge_features': edge_features
-                }
+                    # Predict edge features using full pipeline with all components
+                    edge_embeddings = torch.cat([src_embeddings, dst_embeddings], dim=1)
+                    edge_feat = self.edge_feat_down(edge_embeddings)
+                    edge_feat = self.edge_feat_norm1(edge_feat)
+                    edge_feat = F.gelu(edge_feat)
+
+                    edge_feat_mid = self.edge_feat_mid(edge_feat)
+                    edge_feat_mid = self.edge_feat_norm2(edge_feat_mid)
+                    edge_feat_mid = F.gelu(edge_feat_mid)
+
+                    edge_features = self.edge_feat_out(edge_feat_mid)
+
+                    # Store predictions with mapping back to original edge indices
+                    results['edge_attr_pred'] = edge_features
+                    results['masked_edge_indices'] = valid_masked_indices
+
+                    # Store additional info for debugging/visualization
+                    results['edge_preds'] = {
+                        'masked_edges': masked_edges,
+                        'edge_features': edge_features,
+                        'edge_indices': valid_masked_indices
+                    }
+
 
     def _handle_connectivity(self, data, x, edge_mask, results):
         """Handle connectivity prediction mode."""
@@ -324,3 +334,21 @@ class AIGTransformer(nn.Module):
                     'edge_existence': edge_existence,
                     'edge_features': edge_features
                 }
+
+    def _predict_edge_features(self, src_embeddings, dst_embeddings):
+        """Edge feature prediction with GELU activation."""
+        # Concatenate embeddings
+        edge_embeddings = torch.cat([src_embeddings, dst_embeddings], dim=1)
+
+        # Apply predictor with skip connections
+        edge_feat = self.edge_feat_down(edge_embeddings)
+        edge_feat = self.edge_feat_norm1(edge_feat)
+        edge_feat = F.gelu(edge_feat)
+        edge_feat_mid = self.edge_feat_mid(edge_feat)
+        edge_feat_mid = self.edge_feat_norm2(edge_feat_mid)
+        edge_feat_mid = F.gelu(edge_feat_mid)
+
+        # Final prediction
+        edge_features = self.edge_feat_out(edge_feat_mid)
+
+        return edge_features

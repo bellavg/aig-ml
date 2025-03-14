@@ -348,7 +348,7 @@ class TestTruthTableMasking(unittest.TestCase):
         # Check that all AND gates' truth table values are masked
         for i in range(masked_batch.x.size(0)):
             if is_and_gate[i]:
-                self.assertEqual(masked_batch.x[i, 3].item(), 0.0)
+                self.assertEqual(masked_batch.x[i, 3].item(), -1.0)
 
     def test_edge_structure_preservation(self):
         """Test that edge structure is preserved during node feature masking."""
@@ -434,7 +434,7 @@ class TestTruthTableMasking(unittest.TestCase):
         for i in range(test_batch.x.size(0)):
             if is_and_gate[i]:
                 # AND gates should have their truth table value masked
-                self.assertEqual(node_masked_x[i, 3].item(), 0.0)
+                self.assertEqual(node_masked_x[i, 3].item(), -1.0)
 
                 # But node type should be preserved
                 self.assertTrue(torch.equal(

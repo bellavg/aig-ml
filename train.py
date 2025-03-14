@@ -83,6 +83,14 @@ def train_epoch(args: Any, model: nn.Module, train_loader: Any,
         if mask_mode == "node_feature" and hasattr(masked_batch, 'original_truth_table_values'):
             targets['original_truth_table_values'] = masked_batch.original_truth_table_values
 
+        # Add edge feature original values for edge feature prediction
+        if mask_mode == "edge_feature" and hasattr(masked_batch, 'original_edge_attr'):
+            targets['original_edge_attr'] = masked_batch.original_edge_attr
+
+        # Add edge mask value for edge feature prediction
+        if mask_mode == "edge_feature" and hasattr(masked_batch, 'edge_mask_value'):
+            targets['edge_mask_value'] = masked_batch.edge_mask_value
+
         # Compute loss with awareness of the masking mode
         loss, loss_dict = compute_loss(predictions, targets)
 
@@ -101,7 +109,7 @@ def train_epoch(args: Any, model: nn.Module, train_loader: Any,
         # Increment batch counter
         batch_count += 1
 
-        # Print progress every 10 batches
+        # Print progress every 100 batches
         if batch_idx % 100 == 0:
             print(f"Processed batch {batch_idx}/{len(train_loader)}, Loss: {loss.item():.4f}")
 

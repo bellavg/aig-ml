@@ -5,7 +5,7 @@ from loss import compute_loss
 from prediction import reconstruct_predictions
 
 
-def validate(args, model, val_loader, device):
+def validate(args, model, val_loader, device, mask_value: float = -1.0):
     """
     Run validation with support for the three masking modes:
     1. "node_feature": Mask node features and predict them
@@ -17,6 +17,7 @@ def validate(args, model, val_loader, device):
         model: AIGTransformer model
         val_loader: DataLoader for validation data
         device: Device to validate on (cuda/cpu)
+        mask_value: Special value to use for masking (defaults to -1.0)
 
     Returns:
         val_losses: Dictionary of average losses for validation
@@ -42,7 +43,8 @@ def validate(args, model, val_loader, device):
             masked_batch = create_masked_batch(
                 batch,
                 mp=args.mask_prob,
-                mask_mode=mask_mode
+                mask_mode=mask_mode,
+                mask_value=mask_value
             )
 
             # Forward pass
@@ -70,6 +72,14 @@ def validate(args, model, val_loader, device):
                 # Add mask value if available
                 if hasattr(masked_batch, 'node_mask_value'):
                     targets['node_mask_value'] = masked_batch.node_mask_value
+
+            elif mask_mode == "edge_feature":
+                # Add original edge attributes for edge feature prediction
+                if hasattr(masked_batch, 'original_edge_attr'):
+                    targets['original_edge_attr'] = masked_batch.original_edge_attr
+                # Add edge mask value for edge feature prediction
+                if hasattr(masked_batch, 'edge_mask_value'):
+                    targets['edge_mask_value'] = masked_batch.edge_mask_value
 
             elif mask_mode == "connectivity":
                 # Add connectivity-specific target information
@@ -122,7 +132,28 @@ def validate(args, model, val_loader, device):
 
             elif mask_mode == "edge_feature":
                 # Edge feature prediction accuracy
-                if 'full_edge_features' in full_predictions and 'edge_mask' in targets and targets[
+                if 'edge_attr_pred' in predictions and 'original_edge_attr' in targets:
+                    # Get predictions for masked edges
+                    edge_pred = predictions['edge_attr_pred']
+
+                    # Get original edge attributes
+                    target_edges = targets['original_edge_attr']
+
+                    # Calculate accuracy
+                    pred_labels = (torch.sigmoid(edge_pred) > 0.5).float()
+                    edge_acc = (pred_labels == target_edges).all(dim=1).float().mean()
+                    metrics['edge_feature_accuracy'] += edge_acc.item()
+
+                    # Calculate per-class accuracy if we have at least 2 classes
+                    if target_edges.size(1) >= 2:
+                        inv_accuracy = (pred_labels[:, 0] == target_edges[:, 0]).float().mean()
+                        reg_accuracy = (pred_labels[:, 1] == target_edges[:, 1]).float().mean()
+
+                        metrics['inv_edge_accuracy'] += inv_accuracy.item()
+                        metrics['reg_edge_accuracy'] += reg_accuracy.item()
+
+                # Fallback to using full_edge_features if available
+                elif 'full_edge_features' in full_predictions and 'edge_mask' in targets and targets[
                     'edge_mask'].sum() > 0:
                     pred_edge_features = torch.sigmoid(full_predictions['full_edge_features'])
                     pred_labels = (pred_edge_features > 0.5).float()
@@ -172,3 +203,5 @@ def validate(args, model, val_loader, device):
         metrics[key] /= max(1, len(val_loader))
 
     return val_losses, metrics
+
+

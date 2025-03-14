@@ -47,7 +47,7 @@ def create_masked_batch(batch, mp: float = 0.20, mask_mode: str = "node_feature"
     # Apply the appropriate masking operation based on mode
     if mask_mode == "node_feature":
         _apply_truth_table_masking(masked_batch, node_mask, mask_value)
-        masked_batch.node_mask_value = mask_value
+
     elif mask_mode == "edge_feature":
         _apply_edge_feature_masking(masked_batch, batch, edge_mask)
     elif mask_mode == "connectivity":
@@ -55,6 +55,7 @@ def create_masked_batch(batch, mp: float = 0.20, mask_mode: str = "node_feature"
 
     # Store masking settings and mask positions for use during training/evaluation
     masked_batch.mask_mode = mask_mode
+    masked_batch.node_mask_value = mask_value
     masked_batch.mask_prob = mp
 
     return masked_batch
@@ -162,8 +163,6 @@ def _store_targets(masked_batch, batch):
     masked_batch.x_target = batch.x.clone()
     masked_batch.edge_index_target = batch.edge_index.clone()
     masked_batch.edge_attr_target = batch.edge_attr.clone() if hasattr(batch, 'edge_attr') else None
-
-
 
 
 def _create_edge_masks(batch, mp):
@@ -298,18 +297,36 @@ def _create_strategic_edge_masks(batch, mp, is_and_gate=None):
 #     masked_batch.node_mask = node_mask
 
 
-def _apply_edge_feature_masking(masked_batch, batch, edge_mask):
-    """Apply masking for edge_feature mode"""
-    # Mask edge features but keep the edges
+def _apply_edge_feature_masking(masked_batch, batch, edge_mask, mask_value: float = -1.0):
+    """
+    Apply masking for edge_feature mode.
+
+    Args:
+        masked_batch: PyG Data object being modified
+        batch: Original PyG Data object
+        edge_mask: Boolean tensor indicating which edges to mask
+        mask_value: Special value to use for masking (defaults to -1.0)
+    """
+    # Store the edge mask
     masked_batch.edge_mask = edge_mask
 
-    # For masked edges, zero out the features but keep the edge
+    # Store original edge attributes for loss computation
     if edge_mask.sum() > 0 and hasattr(batch, 'edge_attr'):
+        # Save the original values as targets for the masked edges
+        masked_batch.original_edge_attr = batch.edge_attr[edge_mask].clone()
+
         # Create a copy of edge attributes
         masked_edge_attr = batch.edge_attr.clone()
-        # Zero out masked edge features
-        masked_edge_attr[edge_mask] = 0.0
+
+        # Mask edge features with a distinctive value (-1.0 by default)
+        # This is better than using 0.0 which could be confused with valid edge features
+        masked_edge_attr[edge_mask] = mask_value
+
+        # Update the edge attributes
         masked_batch.edge_attr = masked_edge_attr
+
+        # Store the mask value used
+        masked_batch.edge_mask_value = mask_value
 
     # Store an empty node mask for consistency
     # This is necessary because train_epoch expects it to exist

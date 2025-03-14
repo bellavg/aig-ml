@@ -98,17 +98,9 @@ def compute_node_feature_loss(predictions: Union[torch.Tensor, Dict[str, torch.T
     # Determine appropriate loss function based on value range
     # If values are in [0,1] range or binary, use BCE loss
     # Otherwise use MSE loss for regression
-    if (target_tt.min() >= 0 and target_tt.max() <= 1 and
-            len(torch.unique(target_tt)) <= 2):
-        # Binary classification
-        print("using bce")
-        tt_loss = F.binary_cross_entropy_with_logits(pred_tt, target_tt)
-        losses["truth_table_loss"] = tt_loss
-    else:
-        # Regression
-        print("using mse")
-        tt_loss = F.mse_loss(pred_tt, target_tt)
-        losses["truth_table_loss"] = tt_loss
+    # Regression
+    tt_loss = F.mse_loss(pred_tt, target_tt)
+    losses["truth_table_loss"] = tt_loss
 
     # Total loss is just the truth table loss for this mode
     total_loss = tt_loss
@@ -127,29 +119,111 @@ def compute_edge_feature_loss(predictions, targets):
 
     Returns:
         total_loss: Scalar loss value.
-        losses: Dictionary with 'edge_feature_loss' and 'total_loss'.
+        losses: Dictionary with detailed loss components.
     """
     losses = {}
-    total_loss = 0.0
+    device = next(iter(predictions.values())).device if isinstance(predictions, dict) else predictions.device
 
-    try:
-        pred_edges = get_prediction(predictions, "edge_features")
-        if "edge_mask" in targets and "edge_attr_target" in targets and targets["edge_mask"].sum() > 0:
-            target_edges = targets["edge_attr_target"][targets["edge_mask"]]
-            if pred_edges.size(0) > 0 and target_edges.size(0) > 0:
-                valid_count = min(pred_edges.size(0), target_edges.size(0))
-                if valid_count > 0:
-                    clipped_preds = torch.clamp(pred_edges[:valid_count], -10, 10)
-                    edge_feat_loss = F.binary_cross_entropy_with_logits(
-                        clipped_preds, target_edges[:valid_count]
-                    )
-                    losses["edge_feature_loss"] = edge_feat_loss
-                    total_loss += edge_feat_loss
-    except Exception as e:
-        print(f"Error in edge feature loss calculation: {e}")
+    # Default zero loss for fallback
+    zero_loss = torch.tensor(0.0, device=device)
 
-    return finalize_loss(total_loss, losses, predictions)
+    # Check masking mode
+    if targets.get("mask_mode") != "edge_feature":
+        return zero_loss, {"edge_feature_loss": zero_loss, "total_loss": zero_loss}
 
+    # Extract edge feature predictions - handle different output structures
+    if isinstance(predictions, dict):
+        if "edge_attr_pred" in predictions:
+            # Direct access if available
+            edge_pred = predictions["edge_attr_pred"]
+        elif "edge_preds" in predictions and isinstance(predictions["edge_preds"], dict):
+            # Nested dictionary case
+            edge_pred = predictions["edge_preds"].get("edge_features")
+        else:
+            # No valid predictions found
+            print("Warning: Edge feature predictions not found in model output")
+            return zero_loss, {"edge_feature_loss": zero_loss, "total_loss": zero_loss}
+    else:
+        # Not a dictionary
+        print("Warning: Predictions should be a dictionary")
+        return zero_loss, {"edge_feature_loss": zero_loss, "total_loss": zero_loss}
+
+    # Check for valid predictions
+    if edge_pred is None:
+        print("Warning: Edge predictions are None")
+        return zero_loss, {"edge_feature_loss": zero_loss, "total_loss": zero_loss}
+
+    # Get masked edges and the original edge attributes
+    # FIX: Use dictionary-style access consistently
+    if "original_edge_attr" in targets and targets["original_edge_attr"] is not None:
+        # Direct access to original values stored during masking
+        target_edges = targets["original_edge_attr"]
+    elif "edge_attr_target" in targets and "edge_mask" in targets and targets["edge_mask"].sum() > 0:
+        # Fallback to edge_attr_target
+        target_edges = targets["edge_attr_target"][targets["edge_mask"]]
+    else:
+        print("Warning: Target edge attributes not found")
+        return zero_loss, {"edge_feature_loss": zero_loss, "total_loss": zero_loss}
+
+    # Verify we have valid data to compute loss
+    if edge_pred.size(0) == 0 or target_edges.size(0) == 0:
+        print(f"Warning: Empty prediction ({edge_pred.size(0)}) or target ({target_edges.size(0)})")
+        return zero_loss, {"edge_feature_loss": zero_loss, "total_loss": zero_loss}
+
+    # Check for size mismatch - this should ideally not happen with correct implementation
+    if edge_pred.size(0) != target_edges.size(0):
+        print(f"Warning: Size mismatch between predictions ({edge_pred.size(0)}) and targets ({target_edges.size(0)})")
+        # If there's a mismatch, use the indexed approach with masked_edge_indices if available
+        if "masked_edge_indices" in predictions:
+            valid_indices = predictions["masked_edge_indices"]
+            if valid_indices.size(0) == target_edges.size(0):
+                edge_pred = edge_pred  # Already correct
+            else:
+                # Still mismatched, use minimum size
+                valid_count = min(edge_pred.size(0), target_edges.size(0))
+                edge_pred = edge_pred[:valid_count]
+                target_edges = target_edges[:valid_count]
+                print(f"Using truncated tensors with {valid_count} edges")
+        else:
+            # Fallback: use minimum size
+            valid_count = min(edge_pred.size(0), target_edges.size(0))
+            edge_pred = edge_pred[:valid_count]
+            target_edges = target_edges[:valid_count]
+            print(f"Using truncated tensors with {valid_count} edges")
+
+    # Apply numeric stability measures - clip predictions to avoid extreme values
+    edge_pred_clipped = torch.clamp(edge_pred, -10, 10)
+
+    # Ensure target is float for better loss calculation
+    target_edges = target_edges.float()
+
+    # Since edge features are one-hot encoded ([1,0] for INV, [0,1] for REG),
+    # use binary cross-entropy with logits loss
+    edge_feat_loss = F.binary_cross_entropy_with_logits(
+        edge_pred_clipped, target_edges, reduction='mean'
+    )
+
+    losses["edge_feature_loss"] = edge_feat_loss
+    losses["total_loss"] = edge_feat_loss
+
+    # Calculate accuracy metrics for monitoring
+    with torch.no_grad():
+        # Convert predictions to binary
+        pred_labels = (torch.sigmoid(edge_pred) > 0.5).float()
+
+        # Calculate overall accuracy
+        correct = (pred_labels == target_edges).all(dim=1).float().mean()
+        losses["edge_feat_accuracy"] = correct
+
+        # Calculate per-class accuracy if we have at least 2 classes
+        if target_edges.size(1) >= 2:
+            inv_accuracy = ((pred_labels[:, 0] == target_edges[:, 0])).float().mean()
+            reg_accuracy = ((pred_labels[:, 1] == target_edges[:, 1])).float().mean()
+
+            losses["inv_edge_accuracy"] = inv_accuracy
+            losses["reg_edge_accuracy"] = reg_accuracy
+
+    return edge_feat_loss, losses
 
 def compute_connectivity_loss(predictions, targets):
     """

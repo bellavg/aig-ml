@@ -1,17 +1,20 @@
 import torch
+import torch
+import torch.nn.functional as F
+from typing import Dict, Any, Tuple, Union
 
-
-def create_masked_batch(batch, mp=0.20, mask_mode="node_feature"):
+def create_masked_batch(batch, mp: float = 0.20, mask_mode: str = "node_feature", mask_value: float = -1.0):
     """
-    Create masked batch with support for three masking modes:
-    1. "node_feature": Mask only the truth table value at position 3 for AND gates
-    2. "edge_feature": Mask only edge features
-    3. "connectivity": Mask edges and predict both existence and features
+    Create masked batch with support for three masking modes with improved masking strategy.
 
     Args:
         batch: PyG Data object containing the batch
         mp: Masking probability (0.0 to 1.0) - percentage of AND gates to mask
-        mask_mode: One of the three masking modes
+        mask_mode: One of the three masking modes:
+            - "node_feature": Mask only the truth table value at position 3 for AND gates
+            - "edge_feature": Mask only edge features
+            - "connectivity": Mask edges and predict both existence and features
+        mask_value: Special value to use for masking (defaults to -1.0 which is distinct from 0)
 
     Returns:
         masked_batch: PyG Data object with masking applied
@@ -30,22 +33,27 @@ def create_masked_batch(batch, mp=0.20, mask_mode="node_feature"):
     if mask_mode == "node_feature":
         # Only mask AND gates, not inputs or outputs
         node_mask = _create_node_masks(batch, is_and_gate, mp)
+        masked_batch.node_mask = node_mask
 
     elif mask_mode in ["edge_feature", "connectivity"]:
         if mask_mode == "connectivity":
             edge_mask = _create_strategic_edge_masks(batch, mp, is_and_gate)
+
         else:
             edge_mask = _create_edge_masks(batch, mp)
 
+        masked_batch.edge_mask = edge_mask
+
     # Apply the appropriate masking operation based on mode
     if mask_mode == "node_feature":
-        _apply_truth_table_masking(masked_batch, node_mask)
+        _apply_truth_table_masking(masked_batch, node_mask, mask_value)
+        masked_batch.node_mask_value = mask_value
     elif mask_mode == "edge_feature":
         _apply_edge_feature_masking(masked_batch, batch, edge_mask)
     elif mask_mode == "connectivity":
         _apply_connectivity_masking(masked_batch, batch, edge_mask)
 
-    # Store masking settings
+    # Store masking settings and mask positions for use during training/evaluation
     masked_batch.mask_mode = mask_mode
     masked_batch.mask_prob = mp
 
@@ -70,14 +78,14 @@ def _create_node_masks(batch, is_and_gate, mp):
     # Get batch assignment for each node
     batch_idx = batch.batch if hasattr(batch, 'batch') else torch.zeros(batch.x.size(0), dtype=torch.long,
                                                                         device=batch.x.device)
-
     # Iterate through each graph in the batch
-    for b in torch.unique(batch_idx):
+    unique_batches = torch.unique(batch_idx)
+    for b in unique_batches:
         # Get AND gate nodes for this graph
         graph_mask = batch_idx == b
         graph_and_gates = torch.nonzero(graph_mask & is_and_gate).squeeze(-1)
 
-        # Handle case where squeeze removes a dimension for a single element
+        # If squeeze resulted in a scalar (only one AND gate), convert to a 1D tensor
         if graph_and_gates.dim() == 0 and graph_and_gates.numel() == 1:
             graph_and_gates = graph_and_gates.unsqueeze(0)
 
@@ -85,20 +93,27 @@ def _create_node_masks(batch, is_and_gate, mp):
         num_to_mask = max(1, int(len(graph_and_gates) * mp))
         if len(graph_and_gates) > 0:
             # Shuffle indices and select the first num_to_mask
-            masked_indices = graph_and_gates[torch.randperm(len(graph_and_gates))[:num_to_mask]]
+            if len(graph_and_gates) <= num_to_mask:
+                # If we need to mask all gates, just use all of them
+                masked_indices = graph_and_gates
+            else:
+                # Otherwise, randomly select gates to mask
+                perm = torch.randperm(len(graph_and_gates))[:num_to_mask]
+                masked_indices = graph_and_gates[perm]
+
             node_mask[masked_indices] = True
 
     return node_mask
 
-
-def _apply_truth_table_masking(masked_batch, node_mask):
+def _apply_truth_table_masking(masked_batch, node_mask, mask_value: float = -1.0):
     """
-    Apply masking only to the truth table value (position 3) for AND gates,
-    keeping node type information intact.
+    Apply masking to the truth table value (position 3) for AND gates,
+    using a distinctive value that doesn't appear in the original data.
 
     Args:
         masked_batch: PyG Data object being modified
         node_mask: Boolean tensor indicating which nodes to mask
+        mask_value: Special value to use for masking (should be distinct from valid data values)
     """
     # The truth table value is at index 3 (fourth position)
     TRUTH_TABLE_IDX = 3
@@ -108,17 +123,18 @@ def _apply_truth_table_masking(masked_batch, node_mask):
         # Create a copy of the features
         modified_features = masked_batch.x.clone()
 
-        # For masked nodes, set only the truth table value to zero
-        modified_features[node_mask, TRUTH_TABLE_IDX] = 0.0
+        # Store the original values for later loss calculation
+        masked_batch.original_truth_table_values = masked_batch.x[node_mask, TRUTH_TABLE_IDX].clone()
+
+        # For masked nodes, set the truth table value to our special mask_value
+        modified_features[node_mask, TRUTH_TABLE_IDX] = mask_value
 
         # Update the features
         masked_batch.x = modified_features
 
-    # Store the node mask and relevant information
-    masked_batch.node_mask = node_mask
+    # Store relevant information
     masked_batch.truth_table_idx = TRUTH_TABLE_IDX
     masked_batch.node_type_dim = NODE_TYPE_DIM
-
 
 def _identify_and_gates(batch):
     """Identify AND gates in the graph"""
@@ -148,26 +164,6 @@ def _store_targets(masked_batch, batch):
     masked_batch.edge_attr_target = batch.edge_attr.clone() if hasattr(batch, 'edge_attr') else None
 
 
-# def _create_node_masks(batch, is_and_gate, mp):
-#     """Select nodes for masking based on masking probability"""
-#     node_mask = torch.zeros(batch.x.size(0), dtype=torch.bool, device=batch.x.device)
-#
-#     # Get batch assignment for each node
-#     batch_idx = batch.batch if hasattr(batch, 'batch') else torch.zeros(batch.x.size(0), dtype=torch.long)
-#
-#     # Iterate through each graph in the batch
-#     for b in torch.unique(batch_idx):
-#         # Get nodes for this graph
-#         graph_mask = batch_idx == b
-#         graph_nodes = torch.nonzero(graph_mask & is_and_gate).squeeze(-1)
-#
-#         # Randomly select nodes to mask
-#         num_to_mask = max(1, int(len(graph_nodes) * mp))
-#         if len(graph_nodes) > 0:
-#             masked_indices = graph_nodes[torch.randperm(len(graph_nodes))[:num_to_mask]]
-#             node_mask[masked_indices] = True
-#
-#     return node_mask
 
 
 def _create_edge_masks(batch, mp):

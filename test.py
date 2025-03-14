@@ -4,7 +4,6 @@ from masking import create_masked_batch
 from loss import compute_loss
 from prediction import reconstruct_predictions
 
-# Fix for the edge_feature mode metrics calculation in test.py
 
 def validate(args, model, val_loader, device):
     """
@@ -45,8 +44,10 @@ def validate(args, model, val_loader, device):
                 mp=args.mask_prob,
                 mask_mode=mask_mode
             )
+
             # Forward pass
             predictions = model(masked_batch)
+
             # Prepare base target dictionary with common information
             targets = {
                 'x_target': masked_batch.x_target,
@@ -59,7 +60,18 @@ def validate(args, model, val_loader, device):
             }
 
             # Add mode-specific information to targets
-            if mask_mode == "connectivity":
+            if mask_mode == "node_feature":
+                # Add original truth table values if available
+                if hasattr(masked_batch, 'original_truth_table_values'):
+                    targets['original_truth_table_values'] = masked_batch.original_truth_table_values
+                # Add truth table index if available
+                if hasattr(masked_batch, 'truth_table_idx'):
+                    targets['truth_table_idx'] = masked_batch.truth_table_idx
+                # Add mask value if available
+                if hasattr(masked_batch, 'node_mask_value'):
+                    targets['node_mask_value'] = masked_batch.node_mask_value
+
+            elif mask_mode == "connectivity":
                 # Add connectivity-specific target information
                 if hasattr(masked_batch, 'all_candidate_pairs'):
                     targets['all_candidate_pairs'] = masked_batch.all_candidate_pairs
@@ -82,20 +94,36 @@ def validate(args, model, val_loader, device):
 
             # Compute metrics based on the masking mode
             if mask_mode == "node_feature":
-                # Node feature prediction accuracy
-                if 'node_features' in full_predictions and 'node_mask' in targets and targets[
-                    'node_mask'] is not None and targets['node_mask'].sum() > 0:
-                    pred_node_features = torch.sigmoid(full_predictions['node_features'])
-                    pred_labels = (pred_node_features > 0.5).float()
-                    node_acc = (pred_labels[targets['node_mask']] == targets['x_target'][
-                        targets['node_mask']]).float().mean()
-                    metrics['node_accuracy'] += node_acc.item()
+                # Node truth table value prediction accuracy
+                if 'node_features' in full_predictions and 'node_mask' in targets and targets['node_mask'].sum() > 0:
+                    # Get truth table index (default is 3)
+                    tt_idx = targets.get('truth_table_idx', 3)
+
+                    # Extract predictions - handle different prediction formats
+                    pred = full_predictions['node_features']
+
+                    if pred.dim() > 1 and pred.size(1) > tt_idx:
+                        # If predictions contain all features, just extract truth table values
+                        pred_values = torch.sigmoid(pred[targets['node_mask'], tt_idx])
+                    else:
+                        # If predictions are specific to masked nodes
+                        pred_values = torch.sigmoid(pred[targets['node_mask']])
+
+                    # Get target values
+                    if 'original_truth_table_values' in targets:
+                        target_values = targets['original_truth_table_values']
+                    else:
+                        target_values = targets['x_target'][targets['node_mask'], tt_idx]
+
+                    # Calculate accuracy
+                    pred_labels = (pred_values > 0.5).float()
+                    truth_table_acc = (pred_labels == target_values).float().mean()
+                    metrics['truth_table_accuracy'] += truth_table_acc.item()
 
             elif mask_mode == "edge_feature":
                 # Edge feature prediction accuracy
-                # FIXED: Check directly for 'full_edge_features' as that's what reconstruct_predictions returns
                 if 'full_edge_features' in full_predictions and 'edge_mask' in targets and targets[
-                    'edge_mask'] is not None and targets['edge_mask'].sum() > 0:
+                    'edge_mask'].sum() > 0:
                     pred_edge_features = torch.sigmoid(full_predictions['full_edge_features'])
                     pred_labels = (pred_edge_features > 0.5).float()
 
@@ -113,7 +141,6 @@ def validate(args, model, val_loader, device):
                     existence_acc = (pred_existence.squeeze() == targets['all_candidate_targets']).float().mean()
                     metrics['edge_existence_accuracy'] += existence_acc.item()
 
-                # Edge feature accuracy (only for existing edges)
                 # Edge feature accuracy (only for existing edges)
                 if 'edge_feature_preds' in full_predictions and 'masked_edge_attr_target' in targets:
                     pred_features = torch.sigmoid(full_predictions['edge_feature_preds'])
@@ -135,12 +162,6 @@ def validate(args, model, val_loader, device):
                         if valid_count > 0:
                             feature_acc = (positive_pred_labels[:valid_count] ==
                                            targets['masked_edge_attr_target'][:valid_count]).float().mean()
-                            metrics['edge_feature_accuracy'] += feature_acc.item()
-                    else:
-                        # Fallback to original behavior
-                        pred_labels = (pred_features > 0.5).float()
-                        if pred_labels.size(0) == targets['masked_edge_attr_target'].size(0):
-                            feature_acc = (pred_labels == targets['masked_edge_attr_target']).float().mean()
                             metrics['edge_feature_accuracy'] += feature_acc.item()
 
     # Average losses and metrics

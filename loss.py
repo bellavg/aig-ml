@@ -1,21 +1,22 @@
+
 import torch
 import torch.nn.functional as F
-import torch
-import torch.nn.functional as F
+from typing import Dict, Any, Tuple, Union
 
 
-def compute_loss(predictions, targets):
+def compute_loss(predictions: Union[torch.Tensor, Dict[str, torch.Tensor]],
+                 targets: Dict[str, Any]) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
     """
     Main function to compute loss based on the masking mode.
     Dispatches to specific loss functions for each mode.
 
     Args:
-        predictions: Dictionary of model predictions.
-        targets: Dictionary containing targets and masking information.
+        predictions: Model predictions (either tensor or dictionary)
+        targets: Dictionary containing targets and masking information
 
     Returns:
-        total_loss: Combined loss value.
-        losses: Dictionary of individual loss components.
+        total_loss: Combined loss value
+        losses: Dictionary of individual loss components
     """
     # Get masking mode from targets
     mask_mode = targets.get("mask_mode")
@@ -33,50 +34,87 @@ def compute_loss(predictions, targets):
         raise ValueError(f"Unknown mask_mode: {mask_mode}")
 
 
-def compute_node_feature_loss(predictions, targets):
+def compute_node_feature_loss(predictions: Union[torch.Tensor, Dict[str, torch.Tensor]],
+                              targets: Dict[str, Any]) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
     """
     Compute loss for node feature prediction, focusing only on the truth table value
-    at index 3 for masked AND gates.
+    for masked AND gates.
 
     Args:
-        predictions: Dictionary of model predictions.
-        targets: Dictionary containing targets and masking information.
+        predictions: Model predictions (either tensor or dictionary)
+        targets: Dictionary containing targets and masking information
 
     Returns:
-        total_loss: Scalar loss value.
-        losses: Dictionary with 'truth_table_loss' and 'total_loss'.
+        total_loss: Scalar loss value
+        losses: Dictionary with 'truth_table_loss' and 'total_loss'
     """
     losses = {}
-    total_loss = 0.0
 
-    if "node_features" in predictions and "x_target" in targets:
-        if "node_mask" in targets and targets["node_mask"].sum() > 0:
-            # Get the masked nodes
-            mask = targets["node_mask"]
+    # Handle different prediction formats
+    if isinstance(predictions, dict) and "node_features" in predictions:
+        # Dictionary format with node_features key
+        pred = predictions["node_features"]
+    else:
+        # Direct tensor format
+        pred = predictions
 
-            # Get predicted and target node features for masked nodes
-            pred_nodes = predictions["node_features"][mask]
-            target_nodes = targets["x_target"][mask]
+    # Get the node mask
+    node_mask = targets.get("node_mask")
+    if node_mask is None or node_mask.sum() == 0:
+        # No nodes were masked, return zero loss
+        return torch.tensor(0.0, device=pred.device), {"truth_table_loss": torch.tensor(0.0, device=pred.device)}
 
-            # Get the truth table index (should be at position 3)
-            # If truth_table_idx is stored in targets, use it; otherwise default to 3
-            tt_idx = getattr(targets, "truth_table_idx", 3)
+    # Get the truth table index (should be at position 3)
+    tt_idx = targets.get("truth_table_idx", 3)
 
-            # Extract only the truth table values
+    # Determine target values to use
+    if "original_truth_table_values" in targets:
+        # Directly use stored original values (more efficient)
+        target_tt = targets["original_truth_table_values"]
+
+        # Extract predictions for masked nodes - handling different output formats
+        if pred.dim() > 1 and pred.size(1) > tt_idx:
+            # If predictions have multiple feature dimensions, extract only truth table values
+            pred_tt = pred[node_mask, tt_idx]
+        else:
+            # If predictions are already for the specific feature or are pre-filtered
+            pred_tt = pred[node_mask]
+    else:
+        # Fall back to extracting from x_target
+        target_nodes = targets["x_target"][node_mask]
+        target_tt = target_nodes[:, tt_idx]
+
+        # Extract predictions - matching the approach used for targets
+        if pred.dim() > 1 and pred.size(1) > tt_idx:
+            pred_nodes = pred[node_mask]
             pred_tt = pred_nodes[:, tt_idx]
-            target_tt = target_nodes[:, tt_idx]
+        else:
+            pred_tt = pred[node_mask]
 
-            # Compute loss only on truth table values
-            # Reshape to ensure correct dimensions for BCE loss
-            tt_loss = F.binary_cross_entropy_with_logits(
-                pred_tt.view(-1),
-                target_tt.view(-1)
-            )
+    # Ensure proper shape for loss computation
+    pred_tt = pred_tt.view(-1)
+    target_tt = target_tt.view(-1)
 
-            losses["truth_table_loss"] = tt_loss
-            total_loss += tt_loss
+    # Determine appropriate loss function based on value range
+    # If values are in [0,1] range or binary, use BCE loss
+    # Otherwise use MSE loss for regression
+    if (target_tt.min() >= 0 and target_tt.max() <= 1 and
+            len(torch.unique(target_tt)) <= 2):
+        # Binary classification
+        print("using bce")
+        tt_loss = F.binary_cross_entropy_with_logits(pred_tt, target_tt)
+        losses["truth_table_loss"] = tt_loss
+    else:
+        # Regression
+        print("using mse")
+        tt_loss = F.mse_loss(pred_tt, target_tt)
+        losses["truth_table_loss"] = tt_loss
 
-    return finalize_loss(total_loss, losses, predictions)
+    # Total loss is just the truth table loss for this mode
+    total_loss = tt_loss
+    losses["total_loss"] = total_loss
+
+    return total_loss, losses
 
 
 def compute_edge_feature_loss(predictions, targets):

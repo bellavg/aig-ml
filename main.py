@@ -44,7 +44,7 @@ def parse_args():
 
     parser.add_argument('--val_ratio', type=float, default=0.2,
                         help="Ratio of dataset used for validation")
-    parser.add_argument('--test_ratio', type=float, default=0.1,
+    parser.add_argument('--test_ratio', type=float, default=0.2,
                         help="Ratio of dataset used for testing")
     parser.add_argument('--val_freq', type=int, default=5,
                         help="Frequency (in epochs) to run validation")
@@ -52,17 +52,17 @@ def parse_args():
     parser.add_argument('--device', type=str, default='cuda',
                         help="Device for training (e.g., 'cuda' or 'cpu')")
 
-    parser.add_argument('--num_graphs', type=int, default=24,
+    parser.add_argument('--num_graphs', type=int, default=5000,
                         help="Number of graphs to load from the dataset")
 
     # Model hyperparameters
-    parser.add_argument('--hidden_dim', type=int, default=64,
+    parser.add_argument('--hidden_dim', type=int, default=256,
                         help="Hidden dimension size")
-    parser.add_argument('--num_layers', type=int, default=2,
+    parser.add_argument('--num_layers', type=int, default=4,
                         help="Number of transformer layers")
-    parser.add_argument('--num_heads', type=int, default=2,
+    parser.add_argument('--num_heads', type=int, default=8,
                         help="Number of attention heads")
-    parser.add_argument('--dropout', type=float, default=0.1,
+    parser.add_argument('--dropout', type=float, default=0.01,
                         help="Dropout rate")
 
     # Masking parameters
@@ -76,11 +76,11 @@ def parse_args():
                         help="Enable gate masking (equivalent to --mask_mode=node_feature)")
 
     # Training parameters
-    parser.add_argument('--num_epochs', type=int, default=2,
+    parser.add_argument('--num_epochs', type=int, default=100,
                         help="Number of training epochs")
     parser.add_argument('--batch_size', type=int, default=8,
                         help="Batch size for training")
-    parser.add_argument('--lr', type=float, default=0.001,
+    parser.add_argument('--lr', type=float, default=0.002,
                         help="Learning rate")
     parser.add_argument('--early_stopping', type=int, default=5,
                         help="Number of epochs to wait for improvement before early stopping")
@@ -110,10 +110,6 @@ def main():
     # Set random seed for reproducibility
     set_seed(args.seed)
 
-    # Handle backward compatibility: if gate_masking is set, override mask_mode
-    if args.gate_masking:
-        args.mask_mode = "node_feature"
-        print("Warning: --gate_masking is deprecated, use --mask_mode=node_feature instead")
 
     # Set up experiment name if not provided
     if args.exp_name is None:
@@ -149,9 +145,6 @@ def main():
         f.write(f"Starting experiment: {args.exp_name}\n")
         f.write(f"Masking mode: {args.mask_mode} at {args.mask_prob * 100:.1f}% probability\n")
         f.write(f"Random seed: {args.seed}\n")
-
-        if args.pretrained_model:
-            f.write(f"Using pretrained model: {args.pretrained_model}\n")
 
         f.write(f"Configuration saved to: {config_path}\n")
         f.write("\n")
@@ -207,36 +200,6 @@ def main():
     # Set device
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
-
-    # Load pretrained model if specified
-    if args.pretrained_model and os.path.exists(args.pretrained_model):
-        print(f"Loading pretrained model from {args.pretrained_model}")
-
-        try:
-            # Load state dictionary
-            state_dict = torch.load(args.pretrained_model, map_location=device)
-
-            # Check if model architecture matches
-            model_loaded = model.load_state_dict(state_dict, strict=False)
-
-            if model_loaded.missing_keys:
-                print(f"Warning: Missing keys when loading pretrained model: {model_loaded.missing_keys}")
-            if model_loaded.unexpected_keys:
-                print(f"Warning: Unexpected keys in pretrained model: {model_loaded.unexpected_keys}")
-
-            print(f"Successfully loaded pretrained model")
-            with open(log_path, 'a') as f:
-                f.write(f"Loaded pretrained model from {args.pretrained_model}\n")
-                if model_loaded.missing_keys:
-                    f.write(f"Missing keys: {model_loaded.missing_keys}\n")
-                if model_loaded.unexpected_keys:
-                    f.write(f"Unexpected keys: {model_loaded.unexpected_keys}\n")
-
-        except Exception as e:
-            print(f"Error loading pretrained model: {e}")
-            print("Starting with randomly initialized model instead")
-            with open(log_path, 'a') as f:
-                f.write(f"Failed to load pretrained model: {e}\n")
 
     # Move model to device
     model = model.to(device)

@@ -1,17 +1,18 @@
 import torch
+from typing import Dict, Any
 
 
-def reconstruct_predictions(predictions, targets):
+def reconstruct_predictions(predictions: Dict[str, Any], targets: Dict[str, Any]) -> Dict[str, Any]:
     """
     Reconstruct predictions to match the original graph structure
     for all three masking modes.
 
     Args:
-        outputs: Dict with model predictions
+        predictions: Dict with model predictions
         targets: Dict with ground truth and masking info
 
     Returns:
-        full_predictions: Dict with reconstructed predictions
+        full_pred: Dict with reconstructed predictions
     """
     mask_mode = targets.get('mask_mode', 'node_feature')
     full_pred = {}
@@ -21,14 +22,40 @@ def reconstruct_predictions(predictions, targets):
         if key not in ['node_features', 'edge_preds']:
             full_pred[key] = predictions[key]
 
-    # Reconstruct node features (common to all masking modes)
-    if 'node_features' in predictions:
-        full_pred['node_features'] = predictions['node_features']
-
     # Mode-specific reconstruction
     if mask_mode == "node_feature":
-        # Nothing special to reconstruct for node features
-        pass
+        # For node_feature mode, we only care about truth table values (at index 3)
+        if 'node_features' in predictions:
+            # Extract raw node feature predictions
+            if isinstance(predictions['node_features'], torch.Tensor):
+                raw_pred = predictions['node_features']
+            else:
+                # If it's a dictionary with nested structure
+                raw_pred = predictions['node_features'].get('features', predictions['node_features'])
+
+            # Store raw predictions for evaluation
+            full_pred['node_features'] = raw_pred
+
+            # Additionally, reconstruct full node features if needed
+            if 'x_target' in targets and 'node_mask' in targets and targets['node_mask'].sum() > 0:
+                node_mask = targets['node_mask']
+
+                # Truth table index is position 3 by default
+                truth_table_idx = targets.get('truth_table_idx', 3)
+
+                # Create reconstructed full features tensor
+                full_features = targets['x_target'].clone()
+
+                # If predictions are for all feature dimensions
+                if raw_pred.dim() > 1 and raw_pred.size(1) > truth_table_idx:
+                    # Only update the truth table value at index 3
+                    full_features[node_mask, truth_table_idx] = raw_pred[node_mask, truth_table_idx]
+                else:
+                    # If predictions are already specifically for the truth table value
+                    # Apply predictions to just the masked truth table values
+                    full_features[node_mask, truth_table_idx] = raw_pred[node_mask]
+
+                full_pred['full_node_features'] = full_features
 
     elif mask_mode == "edge_feature":
         # Reconstruct edge features if present

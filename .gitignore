@@ -4,7 +4,7 @@ old/
 # C extensions
 *.so
 
-gpt_graphs.pkl
+*.pkl
 # Distribution / packaging
 .Python
 build/

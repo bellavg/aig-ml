@@ -1,0 +1,35 @@
+
+New truth table node features
+Node Feature Description: Walsh-Hadamard Transform for AIGs
+Feature Overview
+Each node in the AIG is now represented by a 64-dimensional feature vector derived from the Walsh-Hadamard Transform (WHT) of its truth table. These features encode the complete Boolean function behavior in the spectral domain.
+Mathematical Representation
+The feature vector consists of the 64 most significant Walsh-Hadamard coefficients, ordered by magnitude. Each coefficient represents the correlation between the Boolean function and a specific parity function (XOR pattern).
+Information Encoding
+
+Complete Function Representation: Unlike the previous single-value approach, the WHT preserves the complete semantic information of the Boolean function
+Pattern Detection: Captures specific logical patterns present in the function
+Energy Compaction: Most Boolean functions have their information concentrated in a few significant coefficients
+
+Advantages for ML Models
+
+Fixed Dimensionality: Handles variable-length truth tables with consistent 64-dimensional vectors
+Imbalance Handling: Effectively represents functions with mostly 0s or mostly 1s
+Similar Functions → Similar Vectors: Boolean functions with similar behavior have similar WHT representations
+
+Example Interpretation
+For a simple AND gate with truth table "0001":
+
+The WHT coefficients encode that this function:
+
+Only outputs 1 when all inputs are 1
+Shows interaction between variables (not separable)
+Has specific symmetry properties
+
+
+
+These spectral features enable your ML model to understand and predict the functional behavior of nodes in your AIG graphs with significantly higher fidelity than the previous approach.
+
+
+
+Node Feature Prediction

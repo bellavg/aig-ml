@@ -1,205 +1,317 @@
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 from torch_scatter import scatter_add, scatter_mean, scatter_max
+import math
+import torch
+from typing import Dict, List, Optional, Tuple, Union
+
 from layers import *
 
 
-
 class AIGTransformer(nn.Module):
+    """
+    Structure-aware transformer for AND-Inverter Graphs with multi-task capability.
+    Can predict node features, edge features, and links.
+
+    This model:
+    1. Uses DAG-specific attention that respects the graph structure
+    2. Combines both hop-based and edge-type-based positional encoding
+    3. Supports different prediction tasks through task-specific heads
+    4. Includes truth table positional encoding to maintain feature order
+    5. Handles padding masks for truth table values
+    """
+
     def __init__(
             self,
-            node_features=4,
-            edge_features=2,
-            hidden_dim=128,
-            num_layers=3,
-            num_heads=4,
-            dropout=0.2,
-            max_nodes=120,
-            max_hop=5
+            node_type_dim=3,  # Dimension of node type one-hot encoding
+            feature_dim=256,  # Target feature dimension (truth table size)
+            edge_type_dim=2,  # Dimension of edge type one-hot encoding
+            hidden_dim=128,  # Hidden dimension
+            num_layers=4,  # Number of transformer layers
+            num_heads=4,  # Number of attention heads
+            dropout=0.1,  # Dropout rate
+            max_hop=5,  # Maximum hop distance to consider
+            gnn_type="gcn",  # Type of GNN to use for structure extraction
+            max_tt_length=256,  # Maximum truth table length
+            prediction_tasks=["node_feature"]  # List of prediction tasks
     ):
         super(AIGTransformer, self).__init__()
 
-        self.node_features = node_features
-        self.edge_features = edge_features
+        self.prediction_tasks = prediction_tasks
         self.hidden_dim = hidden_dim
-        self.max_hop = max_hop
+        self.num_layers = num_layers
         self.num_heads = num_heads
+        self.max_hop = max_hop
+        self.feature_dim = feature_dim
+        self.edge_type_dim = edge_type_dim
+        self.node_type_dim = node_type_dim
+        self.max_tt_length = max_tt_length
 
-        # Node feature embedding with batch normalization
+        # Constants for special hop/edge types
+        self.TASK_DISTANCE = max_hop + 1
+        self.UNREACHABLE_DISTANCE = max_hop + 2
+        self.TASK_EDGE = edge_type_dim + 1
+        self.SELF_EDGE = edge_type_dim + 2
+        self.NO_EDGE = edge_type_dim + 3
+
+        # Truth table positional encoding
+        self.register_buffer(
+            "tt_pos_encoding",
+            self._create_tt_positional_encoding(max_tt_length, hidden_dim // 4)
+        )
+
+        # Node feature processing
+        self.node_type_embedding = nn.Linear(node_type_dim, hidden_dim // 2)
+        self.tt_feature_embedding = nn.Linear(feature_dim, hidden_dim // 2)
+
+        # Combine node type, tt features, and positional encoding
         self.node_embedding = nn.Sequential(
-            nn.Linear(node_features, hidden_dim),
+            nn.Linear(hidden_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.GELU()
         )
 
+        # Edge feature embedding
+        self.edge_embedding = nn.Linear(edge_type_dim, hidden_dim)
 
-
-        # Topology and edge encodings
-        self.query_hop_emb = nn.Embedding(max_hop + 3, hidden_dim)  # +3 for self, unreachable, task
+        # Positional encoding (hop-based and edge-type-based)
+        self.query_hop_emb = nn.Embedding(max_hop + 3, hidden_dim)
         self.key_hop_emb = nn.Embedding(max_hop + 3, hidden_dim)
         self.value_hop_emb = nn.Embedding(max_hop + 3, hidden_dim)
 
-        self.query_edge_emb = nn.Embedding(edge_features + 4, hidden_dim)  # +4 for special edges
-        self.key_edge_emb = nn.Embedding(edge_features + 4, hidden_dim)
-        self.value_edge_emb = nn.Embedding(edge_features + 4, hidden_dim)
+        self.query_edge_emb = nn.Embedding(edge_type_dim + 4, hidden_dim)
+        self.key_edge_emb = nn.Embedding(edge_type_dim + 4, hidden_dim)
+        self.value_edge_emb = nn.Embedding(edge_type_dim + 4, hidden_dim)
 
-        # Transformer layers with DAG-specific attention
+        # Transformer layers
         self.layers = nn.ModuleList([
             DAGTransformerLayer(
-                d_model=hidden_dim,
-                nhead=num_heads,
-                dim_feedforward=hidden_dim * 4,
-                dropout=dropout,
-                max_hop=max_hop
-            )
-            for _ in range(num_layers)
+                hidden_dim,
+                num_heads,
+                hidden_dim * 4,
+                dropout,
+                max_hop=max_hop,
+                gnn_type=gnn_type
+            ) for _ in range(num_layers)
         ])
 
-        # Structure extractor
-        self.structure_extractor = StructureExtractor(
-            hidden_dim,
-            num_layers=2,
-            batch_norm=True
-        )
-
-        # Node feature prediction head
-        self.node_predictor = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.LayerNorm(hidden_dim // 2),
-            nn.GELU(),
-            nn.Linear(hidden_dim // 2, node_features)
-        )
-
-        # Edge feature prediction components
-        self.edge_feat_down = nn.Linear(hidden_dim * 2, hidden_dim)
-        self.edge_feat_norm1 = nn.LayerNorm(hidden_dim)
-        self.edge_feat_mid = nn.Linear(hidden_dim, hidden_dim // 2)
-        self.edge_feat_norm2 = nn.LayerNorm(hidden_dim // 2)
-        self.edge_feat_out = nn.Linear(hidden_dim // 2, edge_features)
-
-        # Edge existence prediction
-        self.edge_existence_predictor = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.GELU(),
-            nn.Linear(hidden_dim // 2, 1)
-        )
-
-        self.dropout = nn.Dropout(dropout)
-
-        # Final layer norm for better training stability
+        # Final normalization
         self.final_norm = nn.LayerNorm(hidden_dim)
 
+        # Task-specific prediction heads
+        self.prediction_heads = nn.ModuleDict()
+
+        # Node feature prediction head
+        if "node_feature" in prediction_tasks:
+            self.prediction_heads["node_feature"] = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, feature_dim)
+            )
+
+        # Edge feature prediction head
+        if "edge_feature" in prediction_tasks:
+            self.prediction_heads["edge_feature"] = nn.Sequential(
+                nn.Linear(hidden_dim * 2, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, edge_type_dim)
+            )
+
+        # Link prediction head
+        if "link" in prediction_tasks:
+            self.prediction_heads["link"] = nn.Sequential(
+                nn.Linear(hidden_dim * 2, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, 1)
+            )
+
+    def _create_tt_positional_encoding(self, max_length: int, dim: int) -> torch.Tensor:
+        """
+        Create sinusoidal positional encoding for truth table values.
+
+        Args:
+            max_length: Maximum length of truth table
+            dim: Dimension of positional encoding
+
+        Returns:
+            Positional encoding tensor of shape [max_length, dim]
+        """
+        position = torch.arange(max_length).unsqueeze(1).float()
+        div_term = torch.exp(torch.arange(0, dim, 2).float() * (-math.log(10000.0) / dim))
+
+        pos_encoding = torch.zeros(max_length, dim)
+        pos_encoding[:, 0::2] = torch.sin(position * div_term)
+        pos_encoding[:, 1::2] = torch.cos(position * div_term)
+
+        return pos_encoding
+
     def forward(self, data):
+        """
+        Forward pass through the model.
+
+        Args:
+            data: PyG Data object containing:
+                - x: Node features [num_nodes, node_type_dim + feature_dim]
+                - edge_index: Edge indices [2, num_edges]
+                - edge_attr: Edge attributes [num_edges, edge_type_dim]
+                - node_mask: Boolean mask for nodes to predict features for [num_nodes]
+                - edge_mask: Boolean mask for edges to predict features for [num_edges]
+                - candidate_edges: Edges to consider for link prediction [2, num_candidates]
+                - batch: Batch assignment for nodes [num_nodes]
+                - mask_mode: Which prediction task to perform
+
+        Returns:
+            Dictionary of prediction results
+        """
         # Extract data attributes
-        x, edge_index, batch, mask_mode = self._extract_data_attributes(data)
+        x, edge_index = data.x, data.edge_index
         edge_attr = data.edge_attr if hasattr(data, 'edge_attr') else None
-        node_mask = data.node_mask if hasattr(data, 'node_mask') else None
+        node_mask = data.mask if hasattr(data, 'mask') else None
         edge_mask = data.edge_mask if hasattr(data, 'edge_mask') else None
+        candidate_edges = data.candidate_edges if hasattr(data, 'candidate_edges') else None
+        batch = data.batch if hasattr(data, 'batch') else torch.zeros(x.size(0), dtype=torch.long, device=x.device)
+        mask_mode = data.mask_mode if hasattr(data, 'mask_mode') else "node_feature"
 
-        # Node feature embedding
-        x = self.node_embedding(x)
+        # Split node features into node type and truth table features
+        node_type = x[:, :self.node_type_dim]
+        tt_features = x[:, self.node_type_dim:]
 
-        # Compute distance/hop matrix for relative positional encoding
+        # Create padding mask for truth table values (value == -1)
+        padding_mask = (tt_features == -1)
+
+        # Process node type
+        node_type_emb = self.node_type_embedding(node_type)
+
+        # Process truth table features with positional encoding
+        # First handle padding by zeroing out -1 values
+        tt_features_masked = tt_features.clone()
+        tt_features_masked[padding_mask] = 0.0
+
+        # Embed truth table features
+        tt_emb = self.tt_feature_embedding(tt_features_masked)
+
+        # Combine with positional encoding for valid (non-padded) positions
+        batch_size = x.size(0)
+        pos_encoding = self.tt_pos_encoding[:self.max_tt_length, :].unsqueeze(0).expand(batch_size, -1, -1)
+
+        # Combine embeddings
+        h = torch.cat([node_type_emb, tt_emb], dim=-1)
+        h = self.node_embedding(h)
+
+        # Prepare edge features
+        if edge_attr is not None:
+            edge_features = self.edge_embedding(edge_attr)
+        else:
+            edge_features = None
+
+        # Compute distance/hop matrix for structural bias
         distance_matrix = self._compute_hop_distances(edge_index, x.size(0), batch)
 
-        # Apply transformer layers
-        for layer_idx, layer in enumerate(self.layers):
-            # Extract structural features
-            x_struct = self.structure_extractor(x, edge_index, edge_attr)
-            x = x + x_struct  # Residual connection with structural features
+        # Compute edge_attr matrix for edge type bias
+        edge_type_matrix = self._compute_edge_type_matrix(edge_index, edge_attr, x.size(0), batch)
 
-            # Apply transformer layer with relative positional encoding
-            x = layer(
-                x=x,
-                distance_matrix=distance_matrix,
-                edge_index=edge_index,
-                edge_attr=edge_attr,
-                query_hop_emb=self.query_hop_emb,
-                key_hop_emb=self.key_hop_emb,
-                value_hop_emb=self.value_hop_emb,
-                query_edge_emb=self.query_edge_emb,
-                key_edge_emb=self.key_edge_emb,
-                value_edge_emb=self.value_edge_emb,
-                batch=batch
+        # Apply transformer layers
+        for layer in self.layers:
+            h = layer(
+                h,
+                distance_matrix,
+                edge_type_matrix,
+                edge_index,
+                edge_features,
+                self.query_hop_emb.weight,
+                self.query_edge_emb.weight,
+                self.key_hop_emb.weight,
+                self.key_edge_emb.weight,
+                self.value_hop_emb.weight,
+                self.value_edge_emb.weight,
+                batch
             )
 
         # Apply final normalization
-        x = self.final_norm(x)
+        h = self.final_norm(h)
 
-        # Initialize results dictionary
+        # Return predictions based on mask_mode
         results = {}
 
-        # Handle different masking modes
-        if mask_mode == "node_feature":
-            node_out = self.node_predictor(x)
-            results['node_features'] = node_out
+        if mask_mode == "node_feature" and "node_feature" in self.prediction_heads:
+            node_features = self.prediction_heads["node_feature"](h)
+
+            # Apply node mask if provided
             if node_mask is not None:
-                results['mask'] = node_mask
+                masked_indices = torch.nonzero(node_mask).squeeze(-1)
+                if masked_indices.numel() > 0:
+                    masked_features = node_features[masked_indices]
+                    results["node_features"] = masked_features
+                    results["mask"] = node_mask
+            else:
+                results["node_features"] = node_features
 
-        elif mask_mode == "edge_feature":
-            self._handle_edge_feature_mode(data, x, edge_mask, results)
+        elif mask_mode == "edge_feature" and "edge_feature" in self.prediction_heads:
+            # Handle edge feature prediction
+            if edge_mask is not None and edge_mask.sum() > 0:
+                # Get masked edges
+                masked_edge_indices = torch.nonzero(edge_mask).squeeze(-1)
+                masked_edges = edge_index[:, masked_edge_indices]
 
-            # EXPLICITLY use edge feature components to ensure gradient flow
-            if 'edge_preds' in results and results['edge_preds']:
-                edge_embeddings = results['edge_preds'].get('edge_features')
-                if edge_embeddings is not None:
-                    # Force gradient computation by applying dropout or other operation
-                    edge_embeddings = self.dropout(edge_embeddings)
+                # Get node embeddings for source and target nodes
+                src_embeddings = h[masked_edges[0]]
+                tgt_embeddings = h[masked_edges[1]]
 
-        elif mask_mode == "connectivity":
-            self._handle_connectivity(data, x, edge_mask, results)
+                # Concatenate embeddings
+                edge_embeddings = torch.cat([src_embeddings, tgt_embeddings], dim=1)
 
-            # EXPLICITLY use edge existence predictor components
-            if 'edge_preds' in results and results['edge_preds']:
-                edge_existence = results['edge_preds'].get('edge_existence')
-                if edge_existence is not None:
-                    # Force gradient computation
-                    edge_existence = self.dropout(edge_existence)
+                # Predict edge features
+                edge_features = self.prediction_heads["edge_feature"](edge_embeddings)
 
-        else:
-            raise ValueError(f"Unknown masking mode: {mask_mode}")
+                results["edge_features"] = edge_features
+                results["masked_edge_indices"] = masked_edge_indices
+
+        elif mask_mode == "link" and "link" in self.prediction_heads:
+            # Handle link prediction
+            if candidate_edges is not None:
+                # Get node embeddings for source and target nodes
+                src_embeddings = h[candidate_edges[0]]
+                tgt_embeddings = h[candidate_edges[1]]
+
+                # Concatenate embeddings
+                pair_embeddings = torch.cat([src_embeddings, tgt_embeddings], dim=1)
+
+                # Predict link existence
+                link_scores = self.prediction_heads["link"](pair_embeddings)
+
+                results["link_scores"] = link_scores
+                results["candidate_edges"] = candidate_edges
 
         return results
 
-
-    def _extract_data_attributes(self, data):
-        """Extract and return common data attributes."""
-        x = data.x
-        edge_index = data.edge_index
-        batch = data.batch if hasattr(data, 'batch') else None
-        mask_mode = data.mask_mode if hasattr(data, 'mask_mode') else "node_feature"
-        return x, edge_index, batch, mask_mode
-
-    def _compute_hop_distances(self, edge_index, num_nodes, batch=None):
+    def _compute_hop_distances(self, edge_index, num_nodes, batch):
         """
         Compute shortest path distances between all pairs of nodes in a DAG.
-        This version assumes that node IDs are in topological order (i.e. edges only
-        go from lower to higher indices). It computes distances only in the forward
-        (reachable) direction, then clamps unreachable distances.
+
+        Args:
+            edge_index: Edge indices [2, num_edges]
+            num_nodes: Number of nodes in the graph
+            batch: Batch assignment for nodes [num_nodes]
 
         Returns:
             distance_matrix: [num_nodes, num_nodes] tensor of hop distances.
         """
         device = edge_index.device
-        # Use max_val as a temporary "infinity" value.
+        # Use max_val as a "infinity" value
         max_val = self.max_hop + 2
-        distance_matrix = torch.full((num_nodes, num_nodes), max_val, dtype=torch.float32, device=device)
+        distance_matrix = torch.full((num_nodes, num_nodes), max_val, dtype=torch.long, device=device)
 
-        # Set self-distances to 0.
+        # Set self-distances to 0
         for i in range(num_nodes):
-            distance_matrix[i, i] = 0.0
+            distance_matrix[i, i] = 0
 
-        # Build a successor list: for each node, list its direct successors.
+        # Build successor lists
         successors = [[] for _ in range(num_nodes)]
         num_edges = edge_index.size(1)
         for e in range(num_edges):
@@ -207,148 +319,97 @@ class AIGTransformer(nn.Module):
             dst = edge_index[1, e].item()
             successors[src].append(dst)
 
-        # For each node, propagate hop distances forward along successors.
+        # For each node, propagate hop distances forward through the DAG
         for i in range(num_nodes):
-            # Initialize distances for this source node.
-            # (We use a Python list for simplicity; num_nodes is assumed to be moderate.)
+            # Only process nodes within the same batch
+            batch_i = batch[i].item()
+            same_batch_mask = (batch == batch_i)
+
+            # Initialize distances for this source node
             dist = [max_val] * num_nodes
-            dist[i] = 0  # Distance from i to itself is 0.
+            dist[i] = 0
 
-            # Since nodes are topologically ordered, we iterate from i up to num_nodes.
-            for j in range(i, num_nodes):
-                # Only process j if it is reachable from i.
-                if dist[j] < max_val:
-                    # Update distances for each successor of j.
+            # Find nodes reachable from i (only forward direction)
+            for j in range(num_nodes):
+                if same_batch_mask[j].item() and dist[j] < max_val:
+                    # Update distances for each successor of j
                     for k in successors[j]:
-                        # Because of the ordering, we expect k > j.
-                        if k >= i and dist[k] > dist[j] + 1:
+                        if same_batch_mask[k].item() and dist[k] > dist[j] + 1:
                             dist[k] = dist[j] + 1
-            # Write computed distances for source i into the distance matrix.
-            distance_matrix[i] = torch.tensor(dist, dtype=torch.float32, device=device)
 
-        # Optionally, if you need an undirected (symmetric) distance, you could symmetrize:
-        # distance_matrix = torch.min(distance_matrix, distance_matrix.t())
+            # Write computed distances into the matrix
+            distance_matrix[i] = torch.tensor(dist, dtype=torch.long, device=device)
 
-        # Clamp any distance that exceeds max_hop to max_hop+1.
-        distance_matrix = torch.clamp(distance_matrix, max=float(self.max_hop + 1))
+        # Clamp distances to max_hop+1 (unreachable)
+        distance_matrix = torch.clamp(distance_matrix, max=self.UNREACHABLE_DISTANCE)
         return distance_matrix
 
-
-    def _handle_edge_feature_mode(self, data, x, edge_mask, results):
+    def _compute_edge_type_matrix(self, edge_index, edge_attr, num_nodes, batch):
         """
-        Handle edge feature prediction mode.
+        Compute a matrix of edge types between all pairs of nodes.
 
         Args:
-            data: PyG Data object
-            x: Node embeddings
-            edge_mask: Boolean tensor indicating which edges are masked
-            results: Dictionary to store results
+            edge_index: Edge indices [2, num_edges]
+            edge_attr: Edge attributes [num_edges, edge_dim]
+            num_nodes: Number of nodes in the graph
+            batch: Batch assignment for nodes [num_nodes]
+
+        Returns:
+            edge_type_matrix: [num_nodes, num_nodes] tensor of edge types.
         """
-        # Check if we have masked edges
-        if hasattr(data, 'edge_index') and hasattr(data, 'edge_mask') and edge_mask.sum() > 0:
-            # Get the indices of masked edges
-            masked_edge_indices = torch.nonzero(edge_mask).squeeze(-1)
+        device = edge_index.device
 
-            if masked_edge_indices.numel() > 0:
-                # Get the original edge indices
-                edge_index = data.edge_index
+        # Initialize with NO_EDGE for all pairs
+        edge_type_matrix = torch.full((num_nodes, num_nodes), self.NO_EDGE, dtype=torch.long, device=device)
 
-                # Extract just the masked edges
-                masked_edges = edge_index[:, masked_edge_indices]
+        # Set diagonal to self-edge type
+        for i in range(num_nodes):
+            edge_type_matrix[i, i] = self.SELF_EDGE
 
-                # Ensure edges are within bounds of node embeddings
-                valid_edges_mask = (masked_edges[0] < x.size(0)) & (masked_edges[1] < x.size(0))
+        # Fill in actual edge types from edge_index and edge_attr
+        if edge_attr is not None:
+            num_edges = edge_index.size(1)
+            for e in range(num_edges):
+                src = edge_index[0, e].item()
+                dst = edge_index[1, e].item()
 
-                if valid_edges_mask.sum() > 0:
-                    # Filter to valid edges
-                    masked_edges = masked_edges[:, valid_edges_mask]
-                    valid_masked_indices = masked_edge_indices[valid_edges_mask]
+                # For binary edge attributes (e.g., INV/REG), use argmax to get type
+                if edge_attr.dim() > 1 and edge_attr.size(1) > 1:
+                    edge_type = torch.argmax(edge_attr[e]).item()
+                else:
+                    edge_type = edge_attr[e].item()
 
-                    # Get node embeddings for source and target nodes
-                    src_embeddings = x[masked_edges[0]]
-                    dst_embeddings = x[masked_edges[1]]
+                edge_type_matrix[src, dst] = edge_type
 
-                    # Predict edge features using full pipeline with all components
-                    edge_embeddings = torch.cat([src_embeddings, dst_embeddings], dim=1)
-                    edge_feat = self.edge_feat_down(edge_embeddings)
-                    edge_feat = self.edge_feat_norm1(edge_feat)
-                    edge_feat = F.gelu(edge_feat)
+        return edge_type_matrix
 
-                    edge_feat_mid = self.edge_feat_mid(edge_feat)
-                    edge_feat_mid = self.edge_feat_norm2(edge_feat_mid)
-                    edge_feat_mid = F.gelu(edge_feat_mid)
+    def compute_loss(self, pred, target, padding_mask=None):
+        """
+        Compute loss for the model predictions, handling padding values.
 
-                    edge_features = self.edge_feat_out(edge_feat_mid)
+        Args:
+            pred: Predicted features [batch_size, feature_dim]
+            target: Target features [batch_size, feature_dim]
+            padding_mask: Boolean mask for padding values [batch_size, feature_dim]
 
-                    # Store predictions with mapping back to original edge indices
-                    results['edge_attr_pred'] = edge_features
-                    results['masked_edge_indices'] = valid_masked_indices
+        Returns:
+            Loss value
+        """
+        if padding_mask is None:
+            # If no padding mask provided, create one based on target values of -1
+            padding_mask = (target == -1)
 
-                    # Store additional info for debugging/visualization
-                    results['edge_preds'] = {
-                        'masked_edges': masked_edges,
-                        'edge_features': edge_features,
-                        'edge_indices': valid_masked_indices
-                    }
+        # Apply mask to predictions and targets
+        valid_mask = ~padding_mask
 
-
-    def _handle_connectivity(self, data, x, edge_mask, results):
-        """Handle connectivity prediction mode."""
-        if hasattr(data, 'all_candidate_pairs'):
-            all_candidate_pairs = data.all_candidate_pairs
-
-            # Get node embeddings for source and target nodes of all candidates
-            src_embeddings = x[all_candidate_pairs[0]]
-            dst_embeddings = x[all_candidate_pairs[1]]
-
-            # Predict edge existence
-            edge_existence = self.edge_existence_predictor(
-                torch.cat([src_embeddings, dst_embeddings], dim=1))
-
-            # Predict edge features
-            edge_features = self._predict_edge_features(src_embeddings, dst_embeddings)
-
-            # Store edge predictions
-            results['edge_preds'] = {
-                'all_candidate_pairs': all_candidate_pairs,
-                'edge_existence': edge_existence,
-                'edge_features': edge_features
-            }
+        # Calculate MSE loss only on valid (non-padding) positions
+        if valid_mask.sum() > 0:
+            # Only compute loss on non-padded values
+            mse_loss = F.mse_loss(
+                pred[valid_mask],
+                target[valid_mask]
+            )
+            return mse_loss
         else:
-            # Fallback for when all_candidate_pairs is not available
-            if hasattr(data, 'masked_edge_node_pairs') and hasattr(data, 'connectivity_target'):
-                masked_pairs = data.masked_edge_node_pairs
-
-                # Get node embeddings for masked pairs
-                src_embeddings = x[masked_pairs[0]]
-                dst_embeddings = x[masked_pairs[1]]
-
-                # Predict edge existence and features
-                edge_existence = self.edge_existence_predictor(
-                    torch.cat([src_embeddings, dst_embeddings], dim=1))
-                edge_features = self._predict_edge_features(src_embeddings, dst_embeddings)
-
-                # Store predictions
-                results['edge_preds'] = {
-                    'masked_edges': masked_pairs,
-                    'edge_existence': edge_existence,
-                    'edge_features': edge_features
-                }
-
-    def _predict_edge_features(self, src_embeddings, dst_embeddings):
-        """Edge feature prediction with GELU activation."""
-        # Concatenate embeddings
-        edge_embeddings = torch.cat([src_embeddings, dst_embeddings], dim=1)
-
-        # Apply predictor with skip connections
-        edge_feat = self.edge_feat_down(edge_embeddings)
-        edge_feat = self.edge_feat_norm1(edge_feat)
-        edge_feat = F.gelu(edge_feat)
-        edge_feat_mid = self.edge_feat_mid(edge_feat)
-        edge_feat_mid = self.edge_feat_norm2(edge_feat_mid)
-        edge_feat_mid = F.gelu(edge_feat_mid)
-
-        # Final prediction
-        edge_features = self.edge_feat_out(edge_feat_mid)
-
-        return edge_features
+            # If all values are padded, return zero loss
+            return torch.tensor(0.0, device=pred.device)

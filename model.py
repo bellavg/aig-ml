@@ -152,11 +152,11 @@ class AIGTransformerLightning(pl.LightningModule):
         tt_metrics = FeatureMetrics.compute_truth_table_accuracy(pred_features, true_features)
 
         # Log metrics
-        self.log('train_loss', loss, on_step=False, on_epoch=True, prog_bar=True, batch_size=self.batch_size)
-        self.log('train_mse', metrics['mse'], on_step=False, on_epoch=True,batch_size=self.batch_size)
-        self.log('train_mae', metrics['mae'], on_step=False, on_epoch=True,batch_size=self.batch_size)
-        self.log('train_r2', metrics['r2'], on_step=False, on_epoch=True,batch_size=self.batch_size)
-        self.log('train_tt_accuracy', tt_metrics['truth_table_accuracy'], on_step=False, on_epoch=True,batch_size=self.batch_size)
+        self.log('train_loss', loss, on_step=False, on_epoch=True, prog_bar=True, batch_size=self.batch_size,sync_dist=True)
+        self.log('train_mse', metrics['mse'], on_step=False, on_epoch=True,batch_size=self.batch_size,sync_dist=True)
+        self.log('train_mae', metrics['mae'], on_step=False, on_epoch=True,batch_size=self.batch_size,sync_dist=True)
+        self.log('train_r2', metrics['r2'], on_step=False, on_epoch=True,batch_size=self.batch_size,sync_dist=True)
+        self.log('train_tt_accuracy', tt_metrics['truth_table_accuracy'], on_step=False, on_epoch=True,batch_size=self.batch_size,sync_dist=True)
 
         return loss
 

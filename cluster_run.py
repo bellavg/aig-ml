@@ -192,6 +192,7 @@ def main():
 
     logger.info(f"Model has {sum(p.numel() for p in model.parameters())} parameters")
 
+    torch.set_float32_matmul_precision('medium')
     # Initialize trainer with plugins for SLURM environment
     trainer = pl.Trainer(
         max_epochs=args.num_epochs,

@@ -48,7 +48,7 @@ import json
 
 # Import your modules
 from aig_dataset import AIGDataset
-from lightning_model import AIGTransformerLightning
+from model import AIGTransformerLightning
 from datamodule import AIGDataModule
 
 

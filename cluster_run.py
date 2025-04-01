@@ -80,6 +80,10 @@ def main():
                         help="Number of worker processes for data loading")
     parser.add_argument("--pin_memory", action="store_true", help="Use pinned memory for data loading")
 
+    # Progress bar options
+    parser.add_argument("--enable_progress_bar", action="store_true", default=True,
+                        help="Enable progress bar display")
+
     # Other parameters
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--output_dir", type=str, default=None,
@@ -187,23 +191,31 @@ def main():
         binary_loss_weight=args.binary_loss_weight,
         scheduler_factor=args.scheduler_factor,
         scheduler_patience=args.scheduler_patience,
-        clip_grad_norm=args.clip_grad_norm
+        clip_grad_norm=args.clip_grad_norm,
+        batch_size=args.batch_size  # Pass batch size to the model
     )
 
     logger.info(f"Model has {sum(p.numel() for p in model.parameters())} parameters")
 
     torch.set_float32_matmul_precision('medium')
+
     # Initialize trainer with plugins for SLURM environment
     trainer = pl.Trainer(
         max_epochs=args.num_epochs,
+        accelerator=args.accelerator,
+        devices="auto",  # Auto-detect available devices
+        precision=args.precision,
         strategy=strategy,
         callbacks=callbacks,
         logger=csv_logger,
         deterministic=True,
-        # Additional optimization options
         gradient_clip_val=args.clip_grad_norm if args.clip_grad_norm > 0 else None,
-        enable_progress_bar=True,
+        accumulate_grad_batches=args.accumulate_grad_batches,
+        # Progress bar settings
+        enable_progress_bar=args.enable_progress_bar,
         enable_model_summary=True,
+        # Set progress bar refresh rate to help with display
+        reload_dataloaders_every_n_epochs=0,
         profiler="simple",  # Use 'advanced' for more detailed profiling
     )
 

@@ -107,7 +107,7 @@ class AIGTransformerLightning(pl.LightningModule):
         self.scheduler_patience = scheduler_patience
         self.clip_grad_norm = clip_grad_norm
         self.node_type_dim = node_type_dim
-        self.batch_size = batch_size
+        batch_size = batch_size
 
     def forward(self, batch):
         """
@@ -150,13 +150,14 @@ class AIGTransformerLightning(pl.LightningModule):
 
         # Calculate truth table accuracy
         tt_metrics = FeatureMetrics.compute_truth_table_accuracy(pred_features, true_features)
+        batch_size = int(node_mask.sum().item())
 
         # Log metrics
-        self.log('train_loss', loss, on_step=False, on_epoch=True, prog_bar=True, batch_size=self.batch_size,sync_dist=True)
-        self.log('train_mse', metrics['mse'], on_step=False, on_epoch=True,batch_size=self.batch_size,sync_dist=True)
-        self.log('train_mae', metrics['mae'], on_step=False, on_epoch=True,batch_size=self.batch_size,sync_dist=True)
-        self.log('train_r2', metrics['r2'], on_step=False, on_epoch=True,batch_size=self.batch_size,sync_dist=True)
-        self.log('train_tt_accuracy', tt_metrics['truth_table_accuracy'], on_step=False, on_epoch=True,batch_size=self.batch_size,sync_dist=True)
+        self.log('train_loss', loss, on_step=False, on_epoch=True, prog_bar=True, batch_size=batch_size,sync_dist=True)
+        self.log('train_mse', metrics['mse'], on_step=False, on_epoch=True,batch_size=batch_size,sync_dist=True)
+        self.log('train_mae', metrics['mae'], on_step=False, on_epoch=True,batch_size=batch_size,sync_dist=True)
+        self.log('train_r2', metrics['r2'], on_step=False, on_epoch=True,batch_size=batch_size,sync_dist=True)
+        self.log('train_tt_accuracy', tt_metrics['truth_table_accuracy'], on_step=False, on_epoch=True,batch_size=batch_size,sync_dist=True)
 
         return loss
 
@@ -177,6 +178,8 @@ class AIGTransformerLightning(pl.LightningModule):
         # Extract predictions and ground truth
         pred_features = outputs['node_features']
         node_mask = batch.mask
+        # Get the actual batch size
+        batch_size = int(node_mask.sum().item())
 
         # Get features of masked nodes (only the truth table part)
         true_features = batch.y[node_mask, self.node_type_dim:]
@@ -191,11 +194,11 @@ class AIGTransformerLightning(pl.LightningModule):
         tt_metrics = FeatureMetrics.compute_truth_table_accuracy(pred_features, true_features)
 
         # Log metrics
-        self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True, batch_size=self.batch_size,sync_dist=True)
-        self.log('val_mse', metrics['mse'], on_step=False, on_epoch=True,batch_size=self.batch_size,sync_dist=True)
-        self.log('val_mae', metrics['mae'], on_step=False, on_epoch=True,batch_size=self.batch_size,sync_dist=True)
-        self.log('val_r2', metrics['r2'], on_step=False, on_epoch=True,batch_size=self.batch_size,sync_dist=True)
-        self.log('val_tt_accuracy', tt_metrics['truth_table_accuracy'], on_step=False, on_epoch=True,batch_size=self.batch_size,sync_dist=True)
+        self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True, batch_size=batch_size,sync_dist=True)
+        self.log('val_mse', metrics['mse'], on_step=False, on_epoch=True,batch_size=batch_size,sync_dist=True)
+        self.log('val_mae', metrics['mae'], on_step=False, on_epoch=True,batch_size=batch_size,sync_dist=True)
+        self.log('val_r2', metrics['r2'], on_step=False, on_epoch=True,batch_size=batch_size,sync_dist=True)
+        self.log('val_tt_accuracy', tt_metrics['truth_table_accuracy'], on_step=False, on_epoch=True,batch_size=batch_size,sync_dist=True)
 
         return {'val_loss': loss, 'metrics': metrics, 'tt_metrics': tt_metrics}
 
@@ -230,11 +233,12 @@ class AIGTransformerLightning(pl.LightningModule):
         loss = self.criterion(pred_features, true_features)
 
         # Log metrics
-        self.log('test_loss', loss, on_step=False, on_epoch=True, prog_bar=True,batch_size=self.batch_size,sync_dist=True)
-        self.log('test_mse', metrics['mse'], on_step=False, on_epoch=True,batch_size=self.batch_size,sync_dist=True)
-        self.log('test_mae', metrics['mae'], on_step=False, on_epoch=True,batch_size=self.batch_size,sync_dist=True)
-        self.log('test_r2', metrics['r2'], on_step=False, on_epoch=True,batch_size=self.batch_size,sync_dist=True)
-        self.log('test_tt_accuracy', tt_metrics['truth_table_accuracy'], on_step=False, on_epoch=True,batch_size=self.batch_size,sync_dist=True)
+        batch_size = int(node_mask.sum().item())
+        self.log('test_loss', loss, on_step=False, on_epoch=True, prog_bar=True,batch_size=batch_size,sync_dist=True)
+        self.log('test_mse', metrics['mse'], on_step=False, on_epoch=True,batch_size=batch_size,sync_dist=True)
+        self.log('test_mae', metrics['mae'], on_step=False, on_epoch=True,batch_size=batch_size,sync_dist=True)
+        self.log('test_r2', metrics['r2'], on_step=False, on_epoch=True,batch_size=batch_size,sync_dist=True)
+        self.log('test_tt_accuracy', tt_metrics['truth_table_accuracy'], on_step=False, on_epoch=True,batch_size=batch_size,sync_dist=True)
 
         # Store predictions and targets for later analysis
         return {

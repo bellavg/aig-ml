@@ -104,8 +104,6 @@ def main():
     parser.add_argument("--precision", type=str, default="16", choices=["32", "16", "bf16"],
                         help="Precision for training (32, 16, or bf16)")
     parser.add_argument("--accelerator", type=str, default="gpu", help="Accelerator to use")
-    parser.add_argument("--devices", type=int, default=4, help="Number of devices per node")
-    parser.add_argument("--num_nodes", type=int, default=2, help="Number of compute nodes to use")
     parser.add_argument("--strategy", type=str, default="ddp",
                         choices=["ddp", "deepspeed", "fsdp", None],
                         help="Training strategy (ddp, deepspeed, fsdp, etc.)")
@@ -205,7 +203,6 @@ def main():
         num_graphs=args.num_graphs,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        pin_memory=args.pin_memory,
         seed=args.seed
     )
 
@@ -236,16 +233,10 @@ def main():
     # Initialize trainer with plugins for SLURM environment
     trainer = pl.Trainer(
         max_epochs=args.num_epochs,
-        accelerator=args.accelerator,
-        devices=args.devices,
-        num_nodes=args.num_nodes,
         strategy=strategy,
-        precision=args.precision,
         callbacks=callbacks,
-        logger=[tb_logger, csv_logger],
-        accumulate_grad_batches=args.accumulate_grad_batches,
+        logger=csv_logger,
         deterministic=True,
-        plugins=[SLURMEnvironment(auto_requeue=True)],  # Auto requeue if job is preempted
         resume_from_checkpoint=args.resume_from_checkpoint,
         # Additional optimization options
         gradient_clip_val=args.clip_grad_norm if args.clip_grad_norm > 0 else None,

@@ -24,19 +24,14 @@ echo "SLURM_JOB_ID: $SLURM_JOB_ID"
 
 # Run the script with SLURM-specific parameters
 python cluster_run.py \
-    --num_nodes=$SLURM_JOB_NUM_NODES \
-    --devices=$SLURM_GPUS_PER_NODE \
     --strategy=ddp \
     --precision=16 \
     --batch_size=32 \
-    --accumulate_grad_batches=4 \
     --num_epochs=100 \
     --learning_rate=1e-3 \
     --weight_decay=1e-5 \
-    --num_workers=$SLURM_CPUS_PER_TASK \
-    --pin_memory \
     --output_dir="logs/aig_transformer_${SLURM_JOB_ID}" \
-    --data_path="/path/to/your/complete_tt_graphs.pkl" \
+    --data_path="complete_tt_graphs.pkl" \
     --seed=42
 
 # Print job completion message

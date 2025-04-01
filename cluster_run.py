@@ -232,7 +232,6 @@ def main():
         callbacks=callbacks,
         logger=csv_logger,
         deterministic=True,
-        resume_from_checkpoint=args.resume_from_checkpoint,
         # Additional optimization options
         gradient_clip_val=args.clip_grad_norm if args.clip_grad_norm > 0 else None,
         enable_progress_bar=True,

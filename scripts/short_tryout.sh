@@ -28,6 +28,7 @@ python cluster_run.py \
     --num_epochs=100 \
     --learning_rate=1e-3 \
     --weight_decay=1e-5 \
+    --num_graphs=100 \
     --output_dir="logs/aig_transformer_${SLURM_JOB_ID}" \
     --data_path="complete_tt_graphs.pkl" \
     --seed=42

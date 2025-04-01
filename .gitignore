@@ -3,8 +3,10 @@ __pycache__/
 old/
 # C extensions
 *.so
-
-*.pkl
+*.DS_Store
+aigs.pkl
+gpt_graphs.pkl
+*.pt
 # Distribution / packaging
 .Python
 build/

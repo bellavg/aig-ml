@@ -18,9 +18,6 @@ source activate aig-ml
 
 # Print environment info
 echo "Job started at $(date)"
-echo "SLURM_JOB_ID: $SLURM_JOB_ID"
-echo "Running on host: $(hostname)"
-echo "Using GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader)"
 
 # Define masking ratios to test
 MASK_RATIOS=(0.1 0.3 0.5 0.7)

@@ -7,6 +7,321 @@ from typing import Dict, List, Optional, Tuple, Union
 
 from layers import *
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+import pytorch_lightning as pl
+from typing import Dict, List, Optional, Tuple, Union, Any
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+
+# Import your custom modules
+from loss import TruthTableFeatureLoss, FeatureMetrics
+
+
+class AIGTransformerLightning(pl.LightningModule):
+    """
+    PyTorch Lightning implementation of the AIG Transformer model.
+    """
+
+    def __init__(
+            self,
+            node_type_dim: int = 3,  # Dimension of node type one-hot encoding
+            feature_dim: int = 256,  # Target feature dimension (truth table size)
+            edge_type_dim: int = 2,  # Dimension of edge type one-hot encoding
+            hidden_dim: int = 128,  # Hidden dimension
+            num_layers: int = 4,  # Number of transformer layers
+            num_heads: int = 4,  # Number of attention heads
+            dropout: float = 0.1,  # Dropout rate
+            max_hop: int = 5,  # Maximum hop distance to consider
+            gnn_type: str = "gcn",  # Type of GNN to use for structure extraction
+            max_tt_length: int = 256,  # Maximum truth table length
+            prediction_tasks: List[str] = ["node_feature"],  # List of prediction tasks
+            learning_rate: float = 1e-3,
+            weight_decay: float = 1e-5,
+            l1_weight: float = 0.1,
+            feature_normalization: bool = False,
+            binary_loss_weight: float = 2.0,
+            scheduler_factor: float = 0.5,
+            scheduler_patience: int = 5,
+            clip_grad_norm: float = 1.0
+    ):
+        """
+        Initialize the AIG Transformer Lightning model.
+
+        Args:
+            node_type_dim: Dimension of node type one-hot encoding
+            feature_dim: Target feature dimension (truth table size)
+            edge_type_dim: Dimension of edge type one-hot encoding
+            hidden_dim: Hidden dimension
+            num_layers: Number of transformer layers
+            num_heads: Number of attention heads
+            dropout: Dropout rate
+            max_hop: Maximum hop distance to consider
+            gnn_type: Type of GNN to use for structure extraction
+            max_tt_length: Maximum truth table length
+            prediction_tasks: List of prediction tasks
+            learning_rate: Initial learning rate
+            weight_decay: Weight decay for L2 regularization
+            l1_weight: Weight for L1 loss component
+            feature_normalization: Whether to normalize features
+            binary_loss_weight: Weight for binary classification loss
+            scheduler_factor: Factor for learning rate scheduler
+            scheduler_patience: Patience for learning rate scheduler
+            clip_grad_norm: Max norm for gradient clipping
+        """
+        super(AIGTransformerLightning, self).__init__()
+        self.save_hyperparameters()
+
+        # Import AIG Transformer model
+        from model import AIGTransformer
+
+        # Create the PyTorch model
+        self.model = AIGTransformer(
+            node_type_dim=node_type_dim,
+            feature_dim=feature_dim,
+            edge_type_dim=edge_type_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            num_heads=num_heads,
+            dropout=dropout,
+            max_hop=max_hop,
+            gnn_type=gnn_type,
+            max_tt_length=max_tt_length,
+            prediction_tasks=prediction_tasks
+        )
+
+        # Initialize loss function
+        self.criterion = TruthTableFeatureLoss(
+            l1_weight=l1_weight,
+            feature_normalization=feature_normalization,
+            ignore_padding=True,
+            binary_loss_weight=binary_loss_weight
+        )
+
+        # Store hyperparameters needed for optimizer and scheduler
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+        self.scheduler_factor = scheduler_factor
+        self.scheduler_patience = scheduler_patience
+        self.clip_grad_norm = clip_grad_norm
+        self.node_type_dim = node_type_dim
+
+    def forward(self, batch):
+        """
+        Forward pass through the model.
+
+        Args:
+            batch: PyG Data object containing the graph
+
+        Returns:
+            Model output dictionary
+        """
+        return self.model(batch)
+
+    def training_step(self, batch, batch_idx):
+        """
+        Training step.
+
+        Args:
+            batch: PyG Data object containing the graph
+            batch_idx: Index of the batch
+
+        Returns:
+            Loss value
+        """
+        # Forward pass
+        outputs = self(batch)
+
+        # Extract predictions and ground truth
+        pred_features = outputs['node_features']
+        node_mask = batch.mask
+
+        # Get features of masked nodes (only the truth table part)
+        true_features = batch.y[node_mask, self.node_type_dim:]
+
+        # Compute loss
+        loss = self.criterion(pred_features, true_features)
+
+        # Compute metrics with padding handling
+        metrics = FeatureMetrics.compute_metrics(pred_features, true_features, ignore_padding=True)
+
+        # Calculate truth table accuracy
+        tt_metrics = FeatureMetrics.compute_truth_table_accuracy(pred_features, true_features)
+
+        # Log metrics
+        self.log('train_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log('train_mse', metrics['mse'], on_step=False, on_epoch=True)
+        self.log('train_mae', metrics['mae'], on_step=False, on_epoch=True)
+        self.log('train_r2', metrics['r2'], on_step=False, on_epoch=True)
+        self.log('train_tt_accuracy', tt_metrics['truth_table_accuracy'], on_step=False, on_epoch=True)
+
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        """
+        Validation step.
+
+        Args:
+            batch: PyG Data object containing the graph
+            batch_idx: Index of the batch
+
+        Returns:
+            Dictionary with validation metrics
+        """
+        # Forward pass
+        outputs = self(batch)
+
+        # Extract predictions and ground truth
+        pred_features = outputs['node_features']
+        node_mask = batch.mask
+
+        # Get features of masked nodes (only the truth table part)
+        true_features = batch.y[node_mask, self.node_type_dim:]
+
+        # Compute loss
+        loss = self.criterion(pred_features, true_features)
+
+        # Compute metrics with padding handling
+        metrics = FeatureMetrics.compute_metrics(pred_features, true_features, ignore_padding=True)
+
+        # Calculate truth table accuracy
+        tt_metrics = FeatureMetrics.compute_truth_table_accuracy(pred_features, true_features)
+
+        # Log metrics
+        self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log('val_mse', metrics['mse'], on_step=False, on_epoch=True)
+        self.log('val_mae', metrics['mae'], on_step=False, on_epoch=True)
+        self.log('val_r2', metrics['r2'], on_step=False, on_epoch=True)
+        self.log('val_tt_accuracy', tt_metrics['truth_table_accuracy'], on_step=False, on_epoch=True)
+
+        return {'val_loss': loss, 'metrics': metrics, 'tt_metrics': tt_metrics}
+
+    def test_step(self, batch, batch_idx):
+        """
+        Test step.
+
+        Args:
+            batch: PyG Data object containing the graph
+            batch_idx: Index of the batch
+
+        Returns:
+            Dictionary with test metrics
+        """
+        # Forward pass
+        outputs = self(batch)
+
+        # Extract predictions and ground truth
+        pred_features = outputs['node_features']
+        node_mask = batch.mask
+
+        # Get features of masked nodes (only the truth table part)
+        true_features = batch.y[node_mask, self.node_type_dim:]
+
+        # Compute metrics with padding handling
+        metrics = FeatureMetrics.compute_metrics(pred_features, true_features, ignore_padding=True)
+
+        # Calculate truth table accuracy
+        tt_metrics = FeatureMetrics.compute_truth_table_accuracy(pred_features, true_features)
+
+        # Compute loss
+        loss = self.criterion(pred_features, true_features)
+
+        # Log metrics
+        self.log('test_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log('test_mse', metrics['mse'], on_step=False, on_epoch=True)
+        self.log('test_mae', metrics['mae'], on_step=False, on_epoch=True)
+        self.log('test_r2', metrics['r2'], on_step=False, on_epoch=True)
+        self.log('test_tt_accuracy', tt_metrics['truth_table_accuracy'], on_step=False, on_epoch=True)
+
+        # Store predictions and targets for later analysis
+        return {
+            'test_loss': loss,
+            'metrics': metrics,
+            'tt_metrics': tt_metrics,
+            'pred_features': pred_features.detach().cpu(),
+            'true_features': true_features.detach().cpu(),
+            'node_mask': node_mask.detach().cpu()
+        }
+
+    def configure_optimizers(self):
+        """
+        Configure optimizers and learning rate schedulers.
+
+        Returns:
+            Configured optimizer and scheduler
+        """
+        optimizer = torch.optim.AdamW(
+            self.parameters(),
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay
+        )
+
+        # Define scheduler
+        scheduler = {
+            'scheduler': ReduceLROnPlateau(
+                optimizer,
+                mode='min',
+                factor=self.scheduler_factor,
+                patience=self.scheduler_patience,
+                verbose=True,
+            ),
+            'monitor': 'val_loss',  # Metric to monitor
+            'interval': 'epoch',
+            'frequency': 1
+        }
+
+        return [optimizer], [scheduler]
+
+    def on_before_optimizer_step(self, optimizer):
+        """
+        Clip gradients before optimizer step.
+
+        Args:
+            optimizer: The optimizer
+        """
+        if self.clip_grad_norm > 0:
+            # Clip gradients
+            torch.nn.utils.clip_grad_norm_(self.parameters(), self.clip_grad_norm)
+
+    def test_epoch_end(self, outputs):
+        """
+        Process and log aggregated test results at the end of the test epoch.
+
+        Args:
+            outputs: List of outputs from test_step
+
+        Returns:
+            Dictionary with aggregated metrics
+        """
+        # Aggregate metrics across all batches
+        test_loss = torch.stack([x['test_loss'] for x in outputs]).mean()
+        test_mse = np.mean([x['metrics']['mse'] for x in outputs])
+        test_mae = np.mean([x['metrics']['mae'] for x in outputs])
+        test_r2 = np.mean([x['metrics']['r2'] for x in outputs])
+
+        # Aggregate truth table metrics
+        correct_bits = sum(x['tt_metrics']['correct_bits'] for x in outputs)
+        total_bits = sum(x['tt_metrics']['total_bits'] for x in outputs)
+        tt_accuracy = correct_bits / total_bits if total_bits > 0 else 0.0
+
+        # Log final metrics
+        self.log('test_loss_final', test_loss)
+        self.log('test_mse_final', test_mse)
+        self.log('test_mae_final', test_mae)
+        self.log('test_r2_final', test_r2)
+        self.log('test_tt_accuracy_final', tt_accuracy)
+
+        return {
+            'test_loss': test_loss,
+            'test_mse': test_mse,
+            'test_mae': test_mae,
+            'test_r2': test_r2,
+            'test_tt_accuracy': tt_accuracy,
+            'correct_bits': correct_bits,
+            'total_bits': total_bits
+        }
+
 
 class AIGTransformer(nn.Module):
     """

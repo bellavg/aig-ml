@@ -37,7 +37,7 @@ def main():
     # Dataset parameters
     parser.add_argument("--data_path", type=str, default="complete_tt_graphs.pkl",
                         help="Path to AIG dataset pickle file")
-    parser.add_argument("--processed_dir", type=str, default="processed", help="Directory for processed data")
+    parser.add_argument("--processed_dir", type=str, default="data", help="Directory for processed data")
     parser.add_argument("--mask_ratio", type=float, default=0.20, help="Ratio of nodes to mask")
     parser.add_argument("--num_graphs", type=int, default=100, help="Number of graphs to use (default: all)")
     parser.add_argument("--train_ratio", type=float, default=0.7, help="Ratio of data for training")

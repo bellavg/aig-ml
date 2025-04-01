@@ -4,7 +4,6 @@
 #SBATCH --gpus=1
 #SBATCH --time=24:00:00
 #SBATCH --output=slurm_logs/nr_%j.out
-#SBATCH --error=slurm_logs/nr_%j.err
 
 cd ..
 # Create log directory if it doesn't exist

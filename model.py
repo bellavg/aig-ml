@@ -44,7 +44,8 @@ class AIGTransformerLightning(pl.LightningModule):
             binary_loss_weight: float = 2.0,
             scheduler_factor: float = 0.5,
             scheduler_patience: int = 5,
-            clip_grad_norm: float = 1.0
+            clip_grad_norm: float = 1.0,
+            batch_size: int = 32,
     ):
         """
         Initialize the AIG Transformer Lightning model.
@@ -106,6 +107,7 @@ class AIGTransformerLightning(pl.LightningModule):
         self.scheduler_patience = scheduler_patience
         self.clip_grad_norm = clip_grad_norm
         self.node_type_dim = node_type_dim
+        self.batch_size = batch_size
 
     def forward(self, batch):
         """
@@ -150,11 +152,11 @@ class AIGTransformerLightning(pl.LightningModule):
         tt_metrics = FeatureMetrics.compute_truth_table_accuracy(pred_features, true_features)
 
         # Log metrics
-        self.log('train_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
-        self.log('train_mse', metrics['mse'], on_step=False, on_epoch=True)
-        self.log('train_mae', metrics['mae'], on_step=False, on_epoch=True)
-        self.log('train_r2', metrics['r2'], on_step=False, on_epoch=True)
-        self.log('train_tt_accuracy', tt_metrics['truth_table_accuracy'], on_step=False, on_epoch=True)
+        self.log('train_loss', loss, on_step=False, on_epoch=True, prog_bar=True, batch_size=self.batch_size)
+        self.log('train_mse', metrics['mse'], on_step=False, on_epoch=True,batch_size=self.batch_size)
+        self.log('train_mae', metrics['mae'], on_step=False, on_epoch=True,batch_size=self.batch_size)
+        self.log('train_r2', metrics['r2'], on_step=False, on_epoch=True,batch_size=self.batch_size)
+        self.log('train_tt_accuracy', tt_metrics['truth_table_accuracy'], on_step=False, on_epoch=True,batch_size=self.batch_size)
 
         return loss
 

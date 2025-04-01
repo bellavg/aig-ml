@@ -224,12 +224,12 @@ class AIGTransformer(nn.Module):
                 edge_type_matrix,
                 edge_index,
                 edge_features,
-                self.query_hop_emb.weight,
-                self.query_edge_emb.weight,
-                self.key_hop_emb.weight,
-                self.key_edge_emb.weight,
-                self.value_hop_emb.weight,
-                self.value_edge_emb.weight,
+                self.query_hop_emb,  # Pass embedding module, not weight
+                self.query_edge_emb,
+                self.key_hop_emb,
+                self.key_edge_emb,
+                self.value_hop_emb,
+                self.value_edge_emb,
                 batch
             )
 

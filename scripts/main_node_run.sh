@@ -4,8 +4,6 @@
 #SBATCH --gpus=1
 #SBATCH --time=48:00:00          # Increased time for multiple runs
 #SBATCH --output=slurm_logs/multi_mask_%j.out
-#SBATCH --mail-type=END,FAIL     # Send email when job ends or fails
-#SBATCH --cpus-per-task=8        # Adjust based on your requirements
 
 cd ..
 

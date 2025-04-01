@@ -24,8 +24,6 @@ echo "SLURM_JOB_ID: $SLURM_JOB_ID"
 
 # Run the script with SLURM-specific parameters
 python cluster_run.py \
-    --strategy=ddp \
-    --precision=16 \
     --batch_size=32 \
     --num_epochs=100 \
     --learning_rate=1e-3 \

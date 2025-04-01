@@ -26,6 +26,7 @@ srun python cluster_run.py \
     --batch_size=32 \
     --num_epochs=100 \
     --learning_rate=1e-3 \
+    --num_graphs=100 \
     --weight_decay=1e-5 \
     --output_dir="logs/aig_transformer_${SLURM_JOB_ID}" \
     --data_path="complete_tt_graphs.pkl" \

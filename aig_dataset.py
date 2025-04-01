@@ -19,28 +19,15 @@ class AIGDataset(Dataset):
             self,
             file_path: str = "complete_tt_graphs.pkl",
             processed_dir: str = "node_mask_processed",
-            processed_file: str = "node_masked_data.pt",
-            mask_ratio: float = 0.15,
+            processed_file: str = "node_data.pt",  # Changed processed file name as it won't contain masking
+            mask_ratio: float = 0.15,  # Keep mask_ratio as an instance variable
             mask_mode: str = "and_gates",
             node_type_dim: int = 3,
             transform=None,
             pre_transform=None,
-            num_graphs: int = 10000
+            num_graphs: int = 10000,
+            process_chunk_size: int = None
     ):
-        """
-        Initialize the masked AIG dataset.
-
-        Args:
-            file_path: Path to the original pickle file (if processing from scratch)
-            processed_dir: Directory where processed data will be saved
-            processed_file: Filename for the processed data
-            mask_ratio: Percentage of node features to mask (default: 0.15)
-            mask_mode: Strategy for masking ("random", "and_gates", "inputs")
-            node_type_dim: Dimension of the node type one-hot encoding (default: 3)
-            transform: PyG transform to apply on each sample
-            pre_transform: PyG transform to apply before saving processed data
-            num_graphs: Number of graphs to load (default: 10000)
-        """
         self.file_path = file_path
         self.mask_ratio = mask_ratio
         self.mask_mode = mask_mode
@@ -48,8 +35,9 @@ class AIGDataset(Dataset):
         self.num_graphs = num_graphs
         self._processed_file = processed_file
         self._data_list = None
+        self.process_chunk_size = process_chunk_size
 
-        # Node type mapping (from one-hot encoding to label)
+        # Node type mapping
         self.node_types = {
             "ZERO": [0, 0, 0],
             "PI": [1, 0, 0],
@@ -57,14 +45,13 @@ class AIGDataset(Dataset):
             "PO": [0, 0, 1]
         }
 
-        # Initialize PyG Dataset with the root directory
         super().__init__(root=processed_dir, transform=transform, pre_transform=pre_transform)
 
         # Check if processed file exists and load it
         processed_path = os.path.join(self.processed_dir, self._processed_file)
         if os.path.exists(processed_path):
             self._load_processed_data()
-            print(f"Loaded pre-processed masked dataset from {processed_path}")
+            print(f"Loaded pre-processed dataset from {processed_path}")
 
     def _load_processed_data(self):
         """Load processed data directly."""
@@ -84,48 +71,56 @@ class AIGDataset(Dataset):
 
     def process(self):
         """
-        Process the AIG graphs: load from pickle, convert to PyG, and apply masking.
+        Process the AIG graphs in chunks: load from pickle and convert to PyG.
         """
-        # If data is already loaded, no need to process
-        if self._data_list is not None:
-            return
-
         # Check if processed file exists
         processed_path = self.processed_paths[0]
+        existing_data_list = []
         if os.path.exists(processed_path):
-            self._load_processed_data()
-            return
-
-        # If processing is needed but no file_path is provided, raise an error
-        if self.file_path is None:
-            raise ValueError("file_path must be provided when processed data doesn't exist")
+            try:
+                with torch.serialization.safe_globals(["torch_geometric.data.Data"]):
+                    existing_data_list = torch.load(processed_path, weights_only=False)
+                print(f"Loaded {len(existing_data_list)} existing processed graphs.")
+            except Exception as e:
+                print(f"Warning: Could not load existing processed data. Starting from scratch. Error: {e}")
 
         # Process data from pickle file
-        print(f"Processing data from {self.file_path} with masking...")
+        print(f"Processing data from {self.file_path}...")
 
         with open(self.file_path, 'rb') as f:
             nx_graphs = pickle.load(f)
+        total_graphs = len(nx_graphs)
 
-        # If num_graphs is specified, take only the first `num_graphs` graphs
-        if self.num_graphs is not None:
-            nx_graphs = nx_graphs[:self.num_graphs]
-            print(f"Limited dataset to {self.num_graphs} graphs")
+        chunk_size = self.process_chunk_size if hasattr(self, 'process_chunk_size') and self.process_chunk_size is not None else total_graphs
+        start_index = 0
+        while start_index < total_graphs:
+            end_index = min(start_index + chunk_size, total_graphs)
+            nx_graphs_to_process = nx_graphs[start_index:end_index]
+            print(f"Processing graphs from index {start_index} to {end_index - 1} (total {len(nx_graphs_to_process)} in this chunk).")
 
-        data_list = []
-        for nx_graph in nx_graphs:
-            # Convert to PyG Data
-            data = self.convert_to_pyg_data(nx_graph)
+            data_list_chunk = []
+            for i, nx_graph in enumerate(nx_graphs_to_process):
+                global_index = start_index + i
+                print(f"Processing graph {global_index + 1} of {total_graphs}...", end='\r')
+                try:
+                    # Convert to PyG Data
+                    data = self.convert_to_pyg_data(nx_graph)
+                    data_list_chunk.append(data)
+                except Exception as e:
+                    print(f"Error processing graph at index {global_index}: {e}")
 
-            # Apply masking
-            data = self.apply_masking(data)
+            combined_data_list = existing_data_list + data_list_chunk
+            existing_data_list = combined_data_list # Update the list for the next chunk
 
-            data_list.append(data)
+            # Save processed data
+            os.makedirs(self.processed_dir, exist_ok=True)
+            torch.save(combined_data_list, processed_path)
+            print(f"\nSaved {len(data_list_chunk)} processed graphs in this chunk. Total processed: {len(combined_data_list)}")
 
-        # Save processed data
-        os.makedirs(self.processed_dir, exist_ok=True)
-        torch.save(data_list, processed_path)
-        self._data_list = data_list
-        print(f"Saved processed masked dataset to {processed_path}")
+            start_index = end_index
+
+        self._data_list = combined_data_list
+        print(f"\nFinished processing and saved a total of {len(self._data_list)} processed graphs to {processed_path}")
 
     def convert_to_pyg_data(self, nx_graph: nx.DiGraph) -> Data:
         """
@@ -164,6 +159,9 @@ class AIGDataset(Dataset):
             'edge_attr': edge_attr
         }
 
+        # Store original features as target
+        graph_data['y'] = x.clone() # Original features as target
+
         # Store graph-level attributes if available
         if 'inputs' in nx_graph.graph:
             graph_data['num_inputs'] = nx_graph.graph['inputs']
@@ -174,7 +172,7 @@ class AIGDataset(Dataset):
 
     def apply_masking(self, data: Data) -> Data:
         """
-        Apply masking to node features based on the specified mask mode.
+        Apply masking to node features based on the instance's mask_ratio.
 
         This keeps the original features as the target (y) and creates a mask
         indicating which nodes have been masked.
@@ -187,9 +185,6 @@ class AIGDataset(Dataset):
         """
         x = data.x
         num_nodes = x.size(0)
-
-        # Store original features as target
-        data.y = x.clone()
 
         # Create a mask: initially all False (no masking)
         mask = torch.zeros(num_nodes, dtype=torch.bool)
@@ -249,8 +244,10 @@ class AIGDataset(Dataset):
         return len(self._data_list)
 
     def get(self, idx):
-        """Gets the masked AIG at the specified index."""
+        """Gets the masked AIG at the specified index and applies masking."""
         # Load data if not already loaded
         if self._data_list is None:
             self._load_processed_data()
-        return self._data_list[idx]
+        data = self._data_list[idx]
+        data = self.apply_masking(data) # Apply masking here
+        return data

@@ -20,7 +20,7 @@ echo "Job started at $(date)"
 echo "SLURM_JOB_ID: $SLURM_JOB_ID"
 
 # Run the script with SLURM-specific parameters
-python cluster_run.py \
+srun python cluster_run.py \
     --batch_size=32 \
     --num_epochs=100 \
     --learning_rate=1e-3 \

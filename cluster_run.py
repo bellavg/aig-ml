@@ -1,36 +1,3 @@
-"""
-Script for running AIG Transformer training on a GPU cluster with SLURM.
-
-Example usage:
-    # Submit a job to SLURM
-    sbatch run_training.sh
-
-Contents of run_training.sh:
-    #!/bin/bash
-    #SBATCH --job-name=aig-transformer
-    #SBATCH --nodes=2
-    #SBATCH --ntasks-per-node=1
-    #SBATCH --gpus-per-node=4
-    #SBATCH --cpus-per-task=8
-    #SBATCH --mem=64G
-    #SBATCH --time=24:00:00
-    #SBATCH --output=slurm_logs/%j.out
-    #SBATCH --error=slurm_logs/%j.err
-
-    # Activate your environment
-    source /path/to/your/environment/bin/activate
-
-    # Run the script
-    python cluster_run.py \
-        --num_nodes=$SLURM_JOB_NUM_NODES \
-        --devices=4 \
-        --strategy=ddp \
-        --precision=16 \
-        --batch_size=64 \
-        --accumulate_grad_batches=4 \
-        --num_epochs=100
-"""
-
 import os
 import sys
 import torch

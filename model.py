@@ -264,7 +264,6 @@ class AIGTransformerLightning(pl.LightningModule):
                 mode='min',
                 factor=self.scheduler_factor,
                 patience=self.scheduler_patience,
-                verbose=True,
             ),
             'monitor': 'val_loss',  # Metric to monitor
             'interval': 'epoch',

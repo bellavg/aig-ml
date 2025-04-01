@@ -1,6 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=aig-transformer
 #SBATCH --partition=gpu_a100     # Specify the appropriate partition here
+#SBATCH --gpus=1
 #SBATCH --time=00:15:00
 #SBATCH --output=slurm_logs/%j.out
 #SBATCH --error=slurm_logs/%j.err

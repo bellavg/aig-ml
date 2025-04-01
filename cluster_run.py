@@ -151,11 +151,6 @@ def main():
 
     logger.info(f"Arguments saved to {os.path.join(args.output_dir, 'cluster_args.json')}")
 
-    # Initialize Lightning loggers
-    tb_logger = TensorBoardLogger(
-        save_dir=args.output_dir,
-        name="tensorboard_logs"
-    )
     csv_logger = CSVLogger(
         save_dir=args.output_dir,
         name="csv_logs"
